@@ -1,0 +1,17 @@
+**/node_modules/
+**/.venv/
+**/dist/
+**/.data/
+**/__pycache__/
+**/.pytest_cache/
+**/test-results/
+**/hub-test-results/
+**/playwright-report/
+**/coverage/
+**/package-lock.json
+**/*.tsbuildinfo
+.env
+.env.*
+.git/
+.agents/
+.codex/

@@ -1,0 +1,101 @@
+name: arena
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: arena
+      POSTGRES_USER: arena
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U arena -d arena']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  api:
+    build: ./apps/api
+    environment:
+      DATABASE_URL: postgresql+psycopg://arena:${POSTGRES_PASSWORD:-local-development-only}@db:5432/arena
+      DATA_DIR: /data
+      ALLOWED_ORIGINS: http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173
+      JUPYTERHUB_API_URL: http://jupyterhub:8081/jupyter/hub/api
+      JUPYTERHUB_PROXY_URL: http://jupyterhub:8000/jupyter
+      JUPYTERHUB_API_TOKEN: ${JUPYTERHUB_API_TOKEN:?Run python scripts/configure_notebooks.py first}
+    volumes:
+      - app-data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+  web:
+    build: ./apps/web
+    ports:
+      - '127.0.0.1:8080:80'
+    depends_on:
+      api:
+        condition: service_healthy
+      jupyterhub:
+        condition: service_healthy
+    restart: unless-stopped
+  # Build the scientific runtime once. JupyterHub creates real per-user containers
+  # from this image; this preparation container simply exits successfully.
+  notebook-image:
+    image: arena-singleuser:5.3.0
+    build: ./infra/singleuser
+    entrypoint: ['python', '-c', "print('Arena notebook image ready')"]
+    network_mode: none
+  jupyterhub:
+    build: ./infra/jupyterhub
+    environment:
+      ARENA_API_URL: http://api:8000/api
+      JUPYTERHUB_API_TOKEN: ${JUPYTERHUB_API_TOKEN:?Run python scripts/configure_notebooks.py first}
+      NOTEBOOK_IMAGE: arena-singleuser:5.3.0
+      DOCKER_NETWORK_NAME: arena-notebooks
+    volumes:
+      - hub-data:/data
+      # The Hub alone needs the Docker API; it is never mounted in user notebooks.
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+    networks:
+      - default
+      - notebooks
+    depends_on:
+      api:
+        condition: service_healthy
+      notebook-image:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python3',
+          '-c',
+          "import urllib.request; urllib.request.urlopen('http://localhost:8081/jupyter/hub/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+volumes:
+  postgres-data:
+  app-data:
+  hub-data:
+  # Retained for compatibility with earlier local Jupyter data; not attached.
+  notebook-data:
+networks:
+  default: {}
+  notebooks:
+    name: arena-notebooks

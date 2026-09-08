@@ -1,0 +1,7 @@
+{
+  "@jupyterlab/notebook-extension:tracker": {
+    "codeCellConfig": { "lineNumbers": true, "lineWrap": "on", "matchBrackets": true },
+    "markdownCellConfig": { "lineWrap": "on" }
+  },
+  "@jupyterlab/apputils-extension:notification": { "fetchNews": "false", "checkForUpdates": false }
+}

@@ -1,0 +1,9 @@
+node_modules
+dist
+*.tsbuildinfo
+e2e
+integration
+test-results
+hub-test-results
+playwright-report
+playwright*.ts
