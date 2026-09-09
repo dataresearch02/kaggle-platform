@@ -15,3 +15,5 @@
 .git/
 .agents/
 .codex/
+
+data/

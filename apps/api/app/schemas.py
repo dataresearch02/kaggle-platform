@@ -27,3 +27,8 @@ class ModelInput(BaseModel):
     framework: str = Field(min_length=1, max_length=80)
     license: str = Field(min_length=1, max_length=80)
     url: HttpUrl
+
+
+class WorkUpdate(BaseModel):
+    title: str = Field(min_length=3, max_length=160)
+    description: str = Field(max_length=5000)

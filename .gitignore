@@ -12,3 +12,5 @@ test-results/
 hub-test-results/
 playwright-report/
 *.tsbuildinfo
+
+data/

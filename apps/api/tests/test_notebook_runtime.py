@@ -27,7 +27,12 @@ class FakeHub:
 
     async def request(self, method, path, **kwargs):
         self.calls.append((method, path, kwargs))
+        if path.endswith("/api/sessions"):
+            return httpx.Response(200, json=[])
         if "/api/contents/" in path:
+            if method == "DELETE":
+                self.files.pop(path, None)
+                return httpx.Response(204)
             if method == "GET":
                 return (
                     httpx.Response(200, json=self.files[path])

@@ -3,6 +3,7 @@ import sys
 
 sys.path.insert(0, "/srv/jupyterhub")
 from arena_auth import ArenaAuthenticator
+from storage import prepare_workspace
 
 c = get_config()  # noqa: F821 - provided by JupyterHub
 c.JupyterHub.bind_url = "http://:8000/jupyter/"
@@ -42,13 +43,18 @@ c.DockerSpawner.use_internal_ip = True
 c.DockerSpawner.remove = True
 c.DockerSpawner.name_template = "arena-notebook-{username}"
 c.DockerSpawner.notebook_dir = "/home/jovyan/work"
-c.DockerSpawner.volumes = {"arena-notebook-data-{username}": "/home/jovyan/work"}
+c.Spawner.pre_spawn_hook = prepare_workspace
 c.DockerSpawner.mem_limit = "2G"
 c.DockerSpawner.cpu_limit = 2
 c.DockerSpawner.extra_host_config = {
     "pids_limit": 256,
     "cap_drop": ["ALL"],
     "security_opt": ["no-new-privileges:true"],
+}
+c.Spawner.environment = {
+    "JUPYTERLAB_SETTINGS_DIR": "/home/jovyan/work/.jupyter/lab/user-settings",
+    "JUPYTERLAB_WORKSPACES_DIR": "/home/jovyan/work/.jupyter/lab/workspaces",
+    "IPYTHONDIR": "/home/jovyan/work/.ipython",
 }
 c.Spawner.default_url = "/lab"
 c.Spawner.cmd = ["start-singleuser.py"]

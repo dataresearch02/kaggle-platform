@@ -1,13 +1,23 @@
 name: arena
 services:
+  storage-check:
+    image: python:3.12-slim
+    network_mode: none
+    volumes:
+      - ${DATA_ROOT:?Run python scripts/configure_notebooks.py}:/storage:ro,z
+      - ./scripts/check_storage.py:/check_storage.py:ro,z
+    entrypoint: ['python', '/check_storage.py']
   db:
     image: postgres:17-alpine
+    depends_on:
+      storage-check:
+        condition: service_completed_successfully
     environment:
       POSTGRES_DB: arena
       POSTGRES_USER: arena
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ${DATA_ROOT:?Run python scripts/configure_notebooks.py}/postgres:/var/lib/postgresql/data:z
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U arena -d arena']
       interval: 5s
@@ -17,14 +27,17 @@ services:
   api:
     build: ./apps/api
     environment:
-      DATABASE_URL: postgresql+psycopg://arena:${POSTGRES_PASSWORD:-local-development-only}@db:5432/arena
+      POSTGRES_HOST: db
+      POSTGRES_DB: arena
+      POSTGRES_USER: arena
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
       DATA_DIR: /data
       ALLOWED_ORIGINS: http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173
       JUPYTERHUB_API_URL: http://jupyterhub:8081/jupyter/hub/api
       JUPYTERHUB_PROXY_URL: http://jupyterhub:8000/jupyter
       JUPYTERHUB_API_TOKEN: ${JUPYTERHUB_API_TOKEN:?Run python scripts/configure_notebooks.py first}
     volumes:
-      - app-data:/data
+      - ${DATA_ROOT:?Run python scripts/configure_notebooks.py}/platform:/data:z
     depends_on:
       db:
         condition: service_healthy
@@ -60,12 +73,14 @@ services:
   jupyterhub:
     build: ./infra/jupyterhub
     environment:
+      NOTEBOOKS_HOST_PATH: ${DATA_ROOT:?Run python scripts/configure_notebooks.py}/notebooks
       ARENA_API_URL: http://api:8000/api
       JUPYTERHUB_API_TOKEN: ${JUPYTERHUB_API_TOKEN:?Run python scripts/configure_notebooks.py first}
       NOTEBOOK_IMAGE: arena-singleuser:5.3.0
       DOCKER_NETWORK_NAME: arena-notebooks
     volumes:
-      - hub-data:/data
+      - ${DATA_ROOT:?Run python scripts/configure_notebooks.py}/hub:/data:z
+      - ${DATA_ROOT:?Run python scripts/configure_notebooks.py}/notebooks:/notebooks:z
       # The Hub alone needs the Docker API; it is never mounted in user notebooks.
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
     networks:
@@ -89,12 +104,6 @@ services:
       retries: 12
       start_period: 20s
     restart: unless-stopped
-volumes:
-  postgres-data:
-  app-data:
-  hub-data:
-  # Retained for compatibility with earlier local Jupyter data; not attached.
-  notebook-data:
 networks:
   default: {}
   notebooks:

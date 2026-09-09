@@ -7,7 +7,7 @@ export default defineConfig(({ mode }) => {
     server: {
       proxy: {
         '/api': env.ARENA_API_PROXY || 'http://127.0.0.1:8000',
-        // The Compose gateway checks Arena sessions on HTTP and WebSockets.
+        // The gateway rejects direct Jupyter access; all notebook traffic uses /api.
         '/jupyter': { target: 'http://127.0.0.1:8080', ws: true },
       },
     },

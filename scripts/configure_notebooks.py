@@ -17,6 +17,8 @@ for index, line in enumerate(lines):
         break
 if not found:
     lines.append(key + secrets.token_hex(32))
+if not any(line.startswith("DATA_ROOT=") for line in lines):
+    lines.append("DATA_ROOT=" + str(root / "data"))
 path.write_text("\n".join(lines) + "\n")
 path.chmod(0o600)
 print("Notebook service configuration is ready in .env (credentials are not printed).")

@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import csv
 import hashlib
 import io
@@ -17,14 +19,15 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import FileResponse, JSONResponse
-from sqlalchemy import func, select, text
+from fastapi.responses import FileResponse, JSONResponse, Response
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DBSession
 
 from .auth import COOKIE, current_user, hash_password, new_session, verify_password
 from .db import Base, DATA_DIR, SessionLocal, engine, get_db
 from .models import (
+    ChallengeDetails,
     Comment,
     Competition,
     Course,
@@ -33,6 +36,8 @@ from .models import (
     Entry,
     ModelCard,
     Notebook,
+    NotebookDraft,
+    WorkFileDeletion,
     Progress,
     Session,
     Submission,
@@ -44,7 +49,13 @@ from .schemas import (
     DiscussionInput,
     ModelInput,
     NotebookInput,
+    WorkUpdate,
 )
+from .work_cleanup import cleanup_work_files, remove_work_file
+from .notebook_drafts import user_lock
+from .notebook_editor import router as editor_router
+from .notebook_drafts import router as draft_router, cleanup_drafts
+from .challenges import validate_challenge
 from .scoring import score_csv
 from .seed import seed
 from .notebook_runtime import router as notebook_router, notebook_document
@@ -55,7 +66,17 @@ async def lifespan(app):
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
         seed(db)
-    yield
+    cleanup = asyncio.create_task(cleanup_drafts())
+    work_cleanup = asyncio.create_task(cleanup_work_files())
+    try:
+        yield
+    finally:
+        work_cleanup.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await work_cleanup
+        cleanup.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cleanup
 
 
 app = FastAPI(
@@ -67,6 +88,8 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 app.include_router(notebook_router)
+app.include_router(draft_router)
+app.include_router(editor_router)
 
 
 @app.middleware("http")
@@ -113,6 +136,17 @@ def public(obj, db=None):
     if db and hasattr(obj, "owner_id"):
         owner = db.get(User, obj.owner_id)
         result["owner"] = owner.username if owner else "Deleted user"
+    if db and isinstance(obj, Competition):
+        details = db.get(ChallengeDetails, obj.id)
+        if details:
+            owner = db.get(User, details.owner_id)
+            result.update(
+                owner_id=details.owner_id,
+                owner=owner.username if owner else "Deleted user",
+                kind=details.kind,
+            )
+            if details.kind == "benchmark":
+                result["deadline"] = None
     return result
 
 
@@ -142,7 +176,7 @@ def health(db: DBSession = Depends(get_db)):
 
 @app.get("/api/stats")
 def stats(db: DBSession = Depends(get_db)):
-    return {
+    result = {
         name: db.scalar(select(func.count()).select_from(cls))
         for name, cls in [
             ("datasets", Dataset),
@@ -151,6 +185,14 @@ def stats(db: DBSession = Depends(get_db)):
             ("learners", User),
         ]
     }
+
+    result["benchmarks"] = db.scalar(
+        select(func.count())
+        .select_from(ChallengeDetails)
+        .where(ChallengeDetails.kind == "benchmark")
+    )
+    result["competitions"] -= result["benchmarks"]
+    return result
 
 
 @app.post("/api/auth/register", status_code=201)
@@ -286,9 +328,80 @@ def download_dataset(id: int, db: DBSession = Depends(get_db)):
 
 @app.get("/api/competitions")
 def competitions(q: str = "", db: DBSession = Depends(get_db)):
-    return listing(db, Competition, q)
+    return challenge_listing(db, q, "competition")
 
 
+def challenge_listing(db, q, kind):
+    query = select(Competition).outerjoin(ChallengeDetails)
+    if kind == "benchmark":
+        query = query.where(ChallengeDetails.kind == "benchmark")
+    else:
+        query = query.where(
+            (ChallengeDetails.kind == "competition") | (ChallengeDetails.kind.is_(None))
+        )
+    if q:
+        query = query.where(Competition.title.ilike(f"%{q[:100]}%"))
+    return [
+        public(row, db)
+        for row in db.scalars(query.order_by(Competition.id.desc()).limit(100))
+    ]
+
+
+@app.get("/api/benchmarks")
+def benchmarks(q: str = "", db: DBSession = Depends(get_db)):
+    return challenge_listing(db, q, "benchmark")
+
+
+@app.post("/api/competitions", status_code=201)
+@app.post("/api/benchmarks", status_code=201)
+async def create_challenge(
+    request: Request,
+    title: str = Form(min_length=3, max_length=160),
+    description: str = Form(min_length=3, max_length=5000),
+    category: str = Form(default="Regression", min_length=1, max_length=80),
+    prize: str = Form(default="Knowledge", max_length=80),
+    deadline: str = Form(default=""),
+    test_file: UploadFile = File(),
+    solution_file: UploadFile = File(),
+    user: User = Depends(current_user),
+    db: DBSession = Depends(get_db),
+):
+    kind = "benchmark" if request.url.path.endswith("benchmarks") else "competition"
+    closes = datetime(9999, 1, 1, tzinfo=timezone.utc)
+    if kind == "competition":
+        try:
+            closes = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+            if closes.tzinfo is None or closes <= datetime.now(timezone.utc):
+                raise ValueError()
+        except ValueError:
+            raise HTTPException(422, "Choose a future deadline including its timezone")
+    test_content = await read_upload(test_file)
+    answer_content = await read_upload(solution_file, 1024 * 1024)
+    try:
+        test_text, solution = validate_challenge(test_content, answer_content)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    obj = Competition(
+        title=title,
+        description=description,
+        category=category,
+        prize=prize,
+        metric="RMSE",
+        deadline=closes.astimezone(timezone.utc).isoformat(),
+        solution=json.dumps(solution),
+    )
+    db.add(obj)
+    db.flush()
+    db.add(
+        ChallengeDetails(
+            competition_id=obj.id, owner_id=user.id, kind=kind, test_csv=test_text
+        )
+    )
+    db.commit()
+    return public(obj, db)
+
+
+@app.get("/api/benchmarks/{id}")
 @app.get("/api/competitions/{id}")
 def competition(id: int, db: DBSession = Depends(get_db)):
     obj = require(db, Competition, id)
@@ -301,7 +414,7 @@ def competition(id: int, db: DBSession = Depends(get_db)):
         .limit(100)
     ).all()
     return {
-        **public(obj),
+        **public(obj, db),
         "participants": db.scalar(
             select(func.count()).select_from(Entry).where(Entry.competition_id == id)
         ),
@@ -312,6 +425,7 @@ def competition(id: int, db: DBSession = Depends(get_db)):
     }
 
 
+@app.post("/api/benchmarks/{id}/join")
 @app.post("/api/competitions/{id}/join")
 def join(id: int, user: User = Depends(current_user), db: DBSession = Depends(get_db)):
     obj = require(db, Competition, id)
@@ -328,6 +442,7 @@ def join(id: int, user: User = Depends(current_user), db: DBSession = Depends(ge
     return {"joined": True}
 
 
+@app.get("/api/benchmarks/{id}/sample")
 @app.get("/api/competitions/{id}/sample")
 def sample(id: int, db: DBSession = Depends(get_db)):
     obj = require(db, Competition, id)
@@ -341,16 +456,23 @@ def sample(id: int, db: DBSession = Depends(get_db)):
     )
 
 
+@app.get("/api/benchmarks/{id}/test")
 @app.get("/api/competitions/{id}/test")
 def test_features(id: int, db: DBSession = Depends(get_db)):
     require(db, Competition, id)
+    details = db.get(ChallengeDetails, id)
     return Response(
-        "id,temperature,working_day\n7,20,1\n8,10,1\n9,23,0\n",
+        (
+            details.test_csv
+            if details
+            else "id,temperature,working_day\n7,20,1\n8,10,1\n9,23,0\n"
+        ),
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="test.csv"'},
     )
 
 
+@app.post("/api/benchmarks/{id}/submissions", status_code=201)
 @app.post("/api/competitions/{id}/submissions", status_code=201)
 async def submit(
     id: int,
@@ -381,6 +503,7 @@ async def submit(
     return public(submission)
 
 
+@app.get("/api/benchmarks/{id}/submissions")
 @app.get("/api/competitions/{id}/submissions")
 def my_submissions(
     id: int, user: User = Depends(current_user), db: DBSession = Depends(get_db)
@@ -550,3 +673,109 @@ def create_model(
     db.add(obj)
     db.commit()
     return public(obj, db)
+
+
+WORK_MODELS = {"datasets": Dataset, "notebooks": Notebook, "models": ModelCard}
+
+
+@app.get("/api/work")
+def your_work(user: User = Depends(current_user), db: DBSession = Depends(get_db)):
+    items = []
+    for kind, model in WORK_MODELS.items():
+        for row in db.scalars(select(model).where(model.owner_id == user.id)):
+            items.append({**public(row, db), "work_kind": kind})
+    for details in db.scalars(
+        select(ChallengeDetails).where(ChallengeDetails.owner_id == user.id)
+    ):
+        row = db.get(Competition, details.competition_id)
+        items.append(
+            {
+                **public(row, db),
+                "work_kind": (
+                    "benchmarks" if details.kind == "benchmark" else "competitions"
+                ),
+                "created_at": details.created_at,
+            }
+        )
+    return sorted(
+        items, key=lambda item: (item.get("created_at") or "", item["id"]), reverse=True
+    )
+
+
+def owned_work(kind, id, user, db):
+    if kind in WORK_MODELS:
+        row = db.get(WORK_MODELS[kind], id)
+        owner_id = row.owner_id if row else None
+    elif kind in ("competitions", "benchmarks"):
+        details = db.get(ChallengeDetails, id)
+        expected = "benchmark" if kind == "benchmarks" else "competition"
+        row = db.get(Competition, id) if details and details.kind == expected else None
+        owner_id = details.owner_id if row else None
+    else:
+        raise HTTPException(404, "Work not found")
+    if row is None or owner_id != user.id:
+        raise HTTPException(404, "Work not found")
+    return row
+
+
+@app.patch("/api/work/{kind}/{id}")
+def update_work(
+    kind: str,
+    id: int,
+    data: WorkUpdate,
+    user: User = Depends(current_user),
+    db: DBSession = Depends(get_db),
+):
+    row = owned_work(kind, id, user, db)
+    if len(data.title.strip()) < 3:
+        raise HTTPException(422, "Title must contain at least three characters")
+    row.title = data.title.strip()
+    row.description = data.description
+    db.commit()
+    return {**public(row, db), "work_kind": kind}
+
+
+@app.delete("/api/work/{kind}/{id}", status_code=204)
+async def delete_work(
+    kind: str,
+    id: int,
+    user: User = Depends(current_user),
+    db: DBSession = Depends(get_db),
+):
+    async with user_lock(user.id):
+        row = owned_work(kind, id, user, db)
+        db.refresh(row, with_for_update=True)
+        task = None
+        if kind == "datasets":
+            task = WorkFileDeletion(
+                owner_id=user.id, kind="upload", path=row.storage_key
+            )
+            db.add(task)
+        elif kind == "notebooks":
+            # Expire linked editors before deleting the record, so Save cannot recreate it.
+            for draft in db.scalars(
+                select(NotebookDraft)
+                .where(NotebookDraft.notebook_id == id)
+                .with_for_update()
+            ):
+                draft.expires_at = 0
+                draft.notebook_id = None
+            db.flush()
+            task = WorkFileDeletion(
+                owner_id=user.id, kind="notebook", path=f"arena-notebook-{id}.ipynb"
+            )
+            db.add(task)
+        elif kind in ("competitions", "benchmarks"):
+            db.execute(delete(Submission).where(Submission.competition_id == id))
+            db.execute(delete(Entry).where(Entry.competition_id == id))
+            db.execute(
+                delete(ChallengeDetails).where(ChallengeDetails.competition_id == id)
+            )
+        db.delete(row)
+        db.commit()
+        if task and kind == "datasets":
+            try:
+                await remove_work_file(task, db)
+            except OSError:
+                db.rollback()  # The durable cleanup job remains for retry.
+    return Response(status_code=204)

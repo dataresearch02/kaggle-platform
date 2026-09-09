@@ -4,12 +4,14 @@ import {
   BookOpen,
   Check,
   ChevronRight,
+  ChevronDown,
   Code2,
   Database,
   Download,
   FlaskConical,
   GraduationCap,
   Home,
+  FolderOpen,
   Layers3,
   LogOut,
   Menu,
@@ -22,25 +24,35 @@ import {
 } from 'lucide-react';
 import { api, type Item, type User } from './api';
 import NotebookWorkspace from './NotebookWorkspace';
+import CreatePage from './CreatePage';
+import NewNotebook from './NewNotebook';
+import CreateDropdown from './CreateDropdown';
+import YourWork, { type WorkItem, type WorkKind } from './YourWork';
 
 type Page =
+  | 'work'
   | 'home'
   | 'competitions'
+  | 'benchmarks'
   | 'datasets'
   | 'notebooks'
   | 'models'
   | 'courses'
   | 'discussions';
 const nav = [
+  { id: 'work', label: 'Your work', icon: FolderOpen },
   { id: 'home', label: 'Overview', icon: Home },
   { id: 'competitions', label: 'Competitions', icon: Trophy },
+  { id: 'benchmarks', label: 'Benchmarks', icon: FlaskConical },
   { id: 'datasets', label: 'Datasets', icon: Database },
-  { id: 'notebooks', label: 'Notebooks', icon: Code2 },
   { id: 'models', label: 'Models', icon: Layers3 },
+  { id: 'notebooks', label: 'Codes', icon: Code2 },
   { id: 'courses', label: 'Learn', icon: GraduationCap },
   { id: 'discussions', label: 'Discussions', icon: MessageSquare },
 ] as const;
+const dataHubPages: readonly Page[] = ['datasets', 'models', 'notebooks'];
 const intros: Record<Page, [string, string]> = {
+  work: ['Your work', 'Manage the content you create.'],
   home: [
     'A little curiosity. Endless possibilities.',
     'Explore data, build models, and learn something new. Your next discovery starts here.',
@@ -49,13 +61,17 @@ const intros: Record<Page, [string, string]> = {
     'Put your ideas to the test.',
     'Learn by solving a real modeling problem. Experiment, submit, and improve.',
   ],
+  benchmarks: [
+    'Measure your models.',
+    'Create an ongoing prediction benchmark, submit results, and compare RMSE scores.',
+  ],
   datasets: [
     'Great ideas start with data.',
     'Explore community datasets or share your own. Starter datasets are small synthetic examples.',
   ],
   notebooks: [
     'From a question to an insight.',
-    'Open a notebook, run Python cells, and save your experiments in your own JupyterLab workspace.',
+    'Open a notebook, run Python cells, and save your experiments in the Arena notebook editor.',
   ],
   models: [
     'A starting point for your next model.',
@@ -70,8 +86,6 @@ const intros: Record<Page, [string, string]> = {
     'Ask for help, compare approaches, and learn together.',
   ],
 };
-const starterCode =
-  'import pandas as pd\n\n# Upload a CSV using the JupyterLab file browser before running.\ndf = pd.read_csv("seed-0.csv")\nprint(df.head())\n';
 
 function Modal({
   title,
@@ -128,7 +142,37 @@ export default function App() {
   const [auth, setAuth] = useState<'login' | 'register' | null>(null);
   const [creating, setCreating] = useState(false);
   const [selected, setSelected] = useState<Item | null>(null);
+  const [pendingCreate, setPendingCreate] = useState(false);
   const [mobile, setMobile] = useState(false);
+  const [dataHubOpen, setDataHubOpen] = useState(true);
+  const [work, setWork] = useState<WorkItem[]>([]);
+  const [workLoading, setWorkLoading] = useState(false);
+  const [workError, setWorkError] = useState('');
+  const [workFilter, setWorkFilter] = useState<WorkKind | 'all'>('all');
+  const [workSelection, setWorkSelection] = useState<WorkKind>('notebooks');
+  useEffect(() => {
+    let active = true;
+    setWork((previous) => previous.filter((item) => item.owner_id === user?.id));
+    setWorkError('');
+    if (!user) {
+      setWorkLoading(false);
+      return;
+    }
+    setWorkLoading(true);
+    api<WorkItem[]>('/work')
+      .then((items) => {
+        if (active) setWork(items);
+      })
+      .catch((e) => {
+        if (active) setWorkError(e.message);
+      })
+      .finally(() => {
+        if (active) setWorkLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [user?.id, revision, page, creating]);
 
   useEffect(() => {
     api<User>('/auth/me')
@@ -138,6 +182,7 @@ export default function App() {
       const p = location.hash.slice(1);
       if (nav.some((n) => n.id === p)) {
         setPage(p as Page);
+        if (dataHubPages.includes(p as Page)) setDataHubOpen(true);
         setSelected(null);
         setQuery('');
       }
@@ -146,6 +191,7 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handler);
   }, []);
   useEffect(() => {
+    if (page === 'work') return;
     let active = true;
     setLoading(true);
     setError('');
@@ -187,6 +233,7 @@ export default function App() {
   }, [notice]);
 
   function go(next: Page) {
+    if (dataHubPages.includes(next)) setDataHubOpen(true);
     location.hash = next;
     setPage(next);
     setSelected(null);
@@ -205,13 +252,31 @@ export default function App() {
   async function open(item: Item) {
     try {
       setSelected(
-        page === 'datasets' || page === 'competitions' || page === 'home'
+        page === 'datasets' || page === 'competitions' || page === 'benchmarks' || page === 'home'
           ? await api<Item>(`/${page === 'home' ? 'competitions' : page}/${item.id}`)
           : item,
       );
     } catch (e) {
       setNotice((e as Error).message);
     }
+  }
+
+  function navigationItem(item: (typeof nav)[number]) {
+    return (
+      <button
+        key={item.id}
+        className={page === item.id ? 'active' : ''}
+        aria-current={page === item.id ? 'page' : undefined}
+        onClick={() => {
+          if (item.id === 'work') setWorkFilter('all');
+          go(item.id);
+        }}
+      >
+        <item.icon size={19} />
+        {item.label}
+        {page === item.id && <span className="nav-indicator" />}
+      </button>
+    );
   }
 
   return (
@@ -223,24 +288,44 @@ export default function App() {
           </span>
           arena<span className="brand-dot">.</span>
         </button>
-        <button
-          className="create-button"
-          onClick={() => {
-            go('notebooks');
-            requireAuth(() => setCreating(true));
+        <CreateDropdown
+          onSelect={(target) => {
+            go(target as Page);
+            if (user) setCreating(true);
+            else {
+              setPendingCreate(true);
+              setAuth('register');
+            }
           }}
-        >
-          <Plus size={20} /> Create notebook
-        </button>
+        />
         <div className="nav-label">WORKSPACE</div>
         <nav aria-label="Main navigation">
-          {nav.map((n) => (
-            <button key={n.id} className={page === n.id ? 'active' : ''} onClick={() => go(n.id)}>
-              <n.icon size={19} />
-              {n.label}
-              {page === n.id && <span className="nav-indicator" />}
+          {user && work.length > 0 && navigationItem(nav[0])}
+          {nav
+            .filter((item) => ['home', 'competitions', 'benchmarks'].includes(item.id))
+            .map(navigationItem)}
+          <div className="data-hub-group">
+            <button
+              className={`data-hub-toggle ${dataHubPages.includes(page) ? 'selected' : ''}`}
+              aria-expanded={dataHubOpen}
+              aria-controls="data-hub-navigation"
+              onClick={() => setDataHubOpen(!dataHubOpen)}
+            >
+              <Database size={19} />
+              Data Hub
+              <ChevronDown size={16} className={dataHubOpen ? 'expanded' : ''} />
             </button>
-          ))}
+            <div
+              id="data-hub-navigation"
+              className="data-hub-items"
+              role="group"
+              aria-label="Data Hub"
+              hidden={!dataHubOpen}
+            >
+              {nav.filter((item) => dataHubPages.includes(item.id)).map(navigationItem)}
+            </div>
+          </div>
+          {nav.filter((item) => ['courses', 'discussions'].includes(item.id)).map(navigationItem)}
         </nav>
         <div className="sidebar-note">
           <span className="tiny-icon">
@@ -266,7 +351,7 @@ export default function App() {
             <Menu />
           </button>
           <div className="breadcrumb">
-            Workspace <ChevronRight size={14} />
+            {dataHubPages.includes(page) ? 'Data Hub' : 'Workspace'} <ChevronRight size={14} />
             <span>{nav.find((n) => n.id === page)?.label}</span>
           </div>
           <div className="account">
@@ -303,212 +388,281 @@ export default function App() {
           </div>
         </header>
         <main>
-          {page === 'home' ? (
+          {page === 'work' ? (
+            <YourWork
+              key={`${user?.id}-${workFilter}`}
+              items={work}
+              loading={workLoading}
+              error={workError}
+              signedIn={!!user}
+              signIn={() => setAuth('login')}
+              initialFilter={workFilter}
+              refresh={() => changed('Your work updated')}
+              open={(item) => {
+                setWorkSelection(item.work_kind);
+                if (['datasets', 'competitions', 'benchmarks'].includes(item.work_kind)) {
+                  void api<Item>(`/${item.work_kind}/${item.id}`)
+                    .then(setSelected)
+                    .catch((e) => setNotice(e.message));
+                } else setSelected(item);
+              }}
+            />
+          ) : (
             <>
-              <div className="eyebrow">
-                <span /> A SPACE FOR CURIOUS MINDS
-              </div>
-              <section className="hero">
-                <div className="hero-copy">
-                  <h1>
-                    A little curiosity.
-                    <br />
-                    <span>Endless possibilities.</span>
-                  </h1>
-                  <p>{intros.home[1]}</p>
-                  <div className="hero-actions">
-                    <button className="button" onClick={() => go('competitions')}>
-                      Explore competitions <ArrowRight size={17} />
-                    </button>
-                    <button className="button secondary" onClick={() => go('courses')}>
-                      Start learning <BookOpen size={17} />
-                    </button>
+              {page === 'home' ? (
+                <>
+                  <div className="eyebrow">
+                    <span /> A SPACE FOR CURIOUS MINDS
                   </div>
-                  <div className="hero-caption">
-                    <span className="mini-avatars">
-                      <i>A</i>
-                      <i>M</i>
-                      <i>J</i>
-                    </span>
-                    Built for everyone with a question.
-                  </div>
-                </div>
-                <div className="hero-art" aria-hidden="true">
-                  <div className="orbit one" />
-                  <div className="orbit two" />
-                  <div className="art-grid" />
-                  <div className="art-card data">
-                    <Database size={27} />
-                    <span>EXPLORE</span>
-                    <strong>Find the signal.</strong>
-                    <div className="bars">
-                      <i />
-                      <i />
-                      <i />
-                      <i />
-                      <i />
-                      <i />
-                      <i />
-                    </div>
-                  </div>
-                  <div className="art-card code">
-                    <Code2 size={24} />
-                    <span>EXPERIMENT</span>
-                    <div className="code-lines">
-                      <i />
-                      <i />
-                      <i />
-                    </div>
-                  </div>
-                  <div className="art-spark">
-                    <Sparkles size={25} />
-                  </div>
-                  <span className="art-dot d1" />
-                  <span className="art-dot d2" />
-                </div>
-              </section>
-              <div className="stats">
-                {[
-                  ['datasets', 'Datasets to explore', Database],
-                  ['competitions', 'Challenge to take on', Trophy],
-                  ['notebooks', 'Notebooks to discover', Code2],
-                  ['learners', 'Community accounts', GraduationCap],
-                ].map(([key, label, Icon]) => {
-                  const Component = Icon as typeof Database;
-                  return (
-                    <div key={key as string}>
-                      <span className={`stat-icon ${key}`}>
-                        <Component size={21} />
-                      </span>
-                      <div>
-                        <strong>{stats[key as string] ?? '—'}</strong>
-                        <span>{label as string}</span>
+                  <section className="hero">
+                    <div className="hero-copy">
+                      <h1>
+                        A little curiosity.
+                        <br />
+                        <span>Endless possibilities.</span>
+                      </h1>
+                      <p>{intros.home[1]}</p>
+                      <div className="hero-actions">
+                        <button className="button" onClick={() => go('competitions')}>
+                          Explore competitions <ArrowRight size={17} />
+                        </button>
+                        <button className="button secondary" onClick={() => go('courses')}>
+                          Start learning <BookOpen size={17} />
+                        </button>
+                      </div>
+                      <div className="hero-caption">
+                        <span className="mini-avatars">
+                          <i>A</i>
+                          <i>M</i>
+                          <i>J</i>
+                        </span>
+                        Built for everyone with a question.
                       </div>
                     </div>
-                  );
-                })}
-              </div>
-              <SectionTitle
-                title="Find your next challenge"
-                subtitle="A little competition goes a long way."
-                action="All competitions"
-                click={() => go('competitions')}
-              />
-            </>
-          ) : (
-            <>
-              <div className="eyebrow">
-                EXPLORE / {nav.find((n) => n.id === page)?.label.toUpperCase()}
-              </div>
-              <div className="page-intro">
-                <div>
-                  <h1>{intros[page][0]}</h1>
-                  <p>{intros[page][1]}</p>
-                </div>
-                {['datasets', 'notebooks', 'models', 'discussions'].includes(page) && (
-                  <button className="button" onClick={() => requireAuth(() => setCreating(true))}>
-                    <Plus size={17} />
-                    {page === 'datasets'
-                      ? 'Upload dataset'
-                      : page === 'models'
-                        ? 'Add model card'
-                        : page === 'discussions'
-                          ? 'New discussion'
-                          : 'New notebook'}
+                    <div className="hero-art" aria-hidden="true">
+                      <div className="orbit one" />
+                      <div className="orbit two" />
+                      <div className="art-grid" />
+                      <div className="art-card data">
+                        <Database size={27} />
+                        <span>EXPLORE</span>
+                        <strong>Find the signal.</strong>
+                        <div className="bars">
+                          <i />
+                          <i />
+                          <i />
+                          <i />
+                          <i />
+                          <i />
+                          <i />
+                        </div>
+                      </div>
+                      <div className="art-card code">
+                        <Code2 size={24} />
+                        <span>EXPERIMENT</span>
+                        <div className="code-lines">
+                          <i />
+                          <i />
+                          <i />
+                        </div>
+                      </div>
+                      <div className="art-spark">
+                        <Sparkles size={25} />
+                      </div>
+                      <span className="art-dot d1" />
+                      <span className="art-dot d2" />
+                    </div>
+                  </section>
+                  <div className="stats">
+                    {[
+                      ['datasets', 'Datasets to explore', Database],
+                      ['competitions', 'Challenge to take on', Trophy],
+                      ['notebooks', 'Codes to discover', Code2],
+                      ['learners', 'Community accounts', GraduationCap],
+                    ].map(([key, label, Icon]) => {
+                      const Component = Icon as typeof Database;
+                      return (
+                        <div key={key as string}>
+                          <span className={`stat-icon ${key}`}>
+                            <Component size={21} />
+                          </span>
+                          <div>
+                            <strong>{stats[key as string] ?? '—'}</strong>
+                            <span>{label as string}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <SectionTitle
+                    title="Find your next challenge"
+                    subtitle="A little competition goes a long way."
+                    action="All competitions"
+                    click={() => go('competitions')}
+                  />
+                </>
+              ) : (
+                <>
+                  <div className="eyebrow">
+                    EXPLORE / {nav.find((n) => n.id === page)?.label.toUpperCase()}
+                  </div>
+                  <div className="page-intro">
+                    <div>
+                      <h1>{intros[page][0]}</h1>
+                      <p>{intros[page][1]}</p>
+                    </div>
+                    {[
+                      'datasets',
+                      'notebooks',
+                      'competitions',
+                      'benchmarks',
+                      'models',
+                      'discussions',
+                    ].includes(page) && (
+                      <button
+                        className="button"
+                        onClick={() => requireAuth(() => setCreating(true))}
+                      >
+                        <Plus size={17} />
+                        {page === 'competitions'
+                          ? 'Create competition'
+                          : page === 'benchmarks'
+                            ? 'Create benchmark'
+                            : page === 'datasets'
+                              ? 'Upload dataset'
+                              : page === 'models'
+                                ? 'Add model card'
+                                : page === 'discussions'
+                                  ? 'New discussion'
+                                  : 'New notebook'}
+                      </button>
+                    )}
+                  </div>
+                  {['datasets', 'models', 'notebooks', 'competitions', 'benchmarks'].includes(
+                    page,
+                  ) && (
+                    <div className="collection-tabs">
+                      <span>Explore</span>
+                      <button
+                        onClick={() => {
+                          setWorkFilter(page as WorkKind);
+                          go('work');
+                        }}
+                      >
+                        Your work <ArrowRight size={14} />
+                      </button>
+                    </div>
+                  )}
+                  <div className="filters">
+                    <label className="search">
+                      <Search size={18} />
+                      <input
+                        aria-label={`Search ${page === 'notebooks' ? 'codes' : page}`}
+                        placeholder={`Search ${page === 'notebooks' ? 'codes' : page}…`}
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                      />
+                    </label>
+                    <span>
+                      {items.length} {items.length === 1 ? 'result' : 'results'}
+                    </span>
+                  </div>
+                </>
+              )}
+              {error ? (
+                <div className="empty" role="alert">
+                  <h3>We couldn’t load the workspace</h3>
+                  <p>{error}</p>
+                  <button className="button secondary" onClick={() => setRevision((v) => v + 1)}>
+                    Try again
                   </button>
-                )}
-              </div>
-              <div className="filters">
-                <label className="search">
-                  <Search size={18} />
-                  <input
-                    aria-label={`Search ${page}`}
-                    placeholder={`Search ${page}…`}
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                  />
-                </label>
-                <span>
-                  {items.length} {items.length === 1 ? 'result' : 'results'}
-                </span>
-              </div>
-            </>
-          )}
-          {error ? (
-            <div className="empty" role="alert">
-              <h3>We couldn’t load the workspace</h3>
-              <p>{error}</p>
-              <button className="button secondary" onClick={() => setRevision((v) => v + 1)}>
-                Try again
-              </button>
-            </div>
-          ) : loading ? (
-            <div className="card-grid" aria-label="Loading">
-              <div className="skeleton" />
-              <div className="skeleton" />
-              <div className="skeleton" />
-            </div>
-          ) : items.length === 0 ? (
-            <div className="empty">
-              <Search />
-              <h3>No results yet</h3>
-              <p>Try another search or create the first entry.</p>
-            </div>
-          ) : (
-            <div className={`card-grid ${page === 'discussions' ? 'list-grid' : ''}`}>
-              {items.map((item, index) => (
-                <Card
-                  key={item.id}
-                  item={item}
-                  page={page === 'home' ? 'competitions' : page}
-                  index={index}
-                  onClick={() => open(item)}
-                />
-              ))}
-            </div>
-          )}
-          {page === 'home' && (
-            <>
-              <SectionTitle
-                title="Your next discovery is in the data"
-                subtitle="A few small datasets. Plenty of possibilities."
-                action="Explore datasets"
-                click={() => go('datasets')}
-              />
-              <div className="card-grid">
-                {featured.slice(0, 3).map((item, index) => (
-                  <Card
-                    key={item.id}
-                    item={item}
-                    page="datasets"
-                    index={index}
-                    onClick={() => go('datasets')}
-                  />
-                ))}
-              </div>
-              <section className="learn-banner">
-                <span className="learn-icon">
-                  <GraduationCap size={33} />
-                </span>
-                <div>
-                  <div className="eyebrow">A LITTLE LEARNING, EVERY DAY</div>
-                  <h2>Your next skill is closer than you think.</h2>
-                  <p>Start with Python, explore pandas, or train your first model.</p>
                 </div>
-                <button className="button secondary" onClick={() => go('courses')}>
-                  Explore courses <ArrowRight size={17} />
-                </button>
-              </section>
+              ) : loading ? (
+                <div className="card-grid" aria-label="Loading">
+                  <div className="skeleton" />
+                  <div className="skeleton" />
+                  <div className="skeleton" />
+                </div>
+              ) : items.length === 0 ? (
+                <div className="empty">
+                  <Search />
+                  <h3>No results yet</h3>
+                  <p>Try another search or create the first entry.</p>
+                </div>
+              ) : (
+                <div className={`card-grid ${page === 'discussions' ? 'list-grid' : ''}`}>
+                  {items.map((item, index) => (
+                    <Card
+                      key={item.id}
+                      item={item}
+                      page={page === 'home' ? 'competitions' : page}
+                      index={index}
+                      onClick={() => open(item)}
+                    />
+                  ))}
+                </div>
+              )}
+              {page === 'home' && (
+                <>
+                  <SectionTitle
+                    title="Your next discovery is in the data"
+                    subtitle="A few small datasets. Plenty of possibilities."
+                    action="Explore datasets"
+                    click={() => go('datasets')}
+                  />
+                  <div className="card-grid">
+                    {featured.slice(0, 3).map((item, index) => (
+                      <Card
+                        key={item.id}
+                        item={item}
+                        page="datasets"
+                        index={index}
+                        onClick={() => go('datasets')}
+                      />
+                    ))}
+                  </div>
+                  <section className="learn-banner">
+                    <span className="learn-icon">
+                      <GraduationCap size={33} />
+                    </span>
+                    <div>
+                      <div className="eyebrow">A LITTLE LEARNING, EVERY DAY</div>
+                      <h2>Your next skill is closer than you think.</h2>
+                      <p>Start with Python, explore pandas, or train your first model.</p>
+                    </div>
+                    <button className="button secondary" onClick={() => go('courses')}>
+                      Explore courses <ArrowRight size={17} />
+                    </button>
+                  </section>
+                </>
+              )}
+              <footer>
+                <span>
+                  arena. <span>A place to learn by doing.</span>
+                </span>
+                <span>Open workspace · Community edition</span>
+              </footer>
             </>
           )}
-          <footer>
-            <span>
-              arena. <span>A place to learn by doing.</span>
-            </span>
-            <span>Open workspace · Community edition</span>
-          </footer>
         </main>
       </div>
+      {creating && page === 'notebooks' && (
+        <NewNotebook
+          close={() => setCreating(false)}
+          saved={() => changed('Notebook saved permanently')}
+        />
+      )}
+      {creating && page !== 'notebooks' && (
+        <CreatePage
+          key={page}
+          page={page}
+          close={() => setCreating(false)}
+          success={() => {
+            setCreating(false);
+            changed('Published to the community');
+          }}
+        />
+      )}
       {notice && (
         <div className="toast" role="status">
           {notice}
@@ -521,28 +675,25 @@ export default function App() {
         <AuthModal
           mode={auth}
           toggle={() => setAuth(auth === 'login' ? 'register' : 'login')}
-          close={() => setAuth(null)}
+          close={() => {
+            setAuth(null);
+            setPendingCreate(false);
+          }}
           success={(u) => {
             setUser(u);
+            if (pendingCreate) {
+              setCreating(true);
+              setPendingCreate(false);
+            }
             setAuth(null);
             changed(`Welcome, ${u.username}`);
-          }}
-        />
-      )}
-      {creating && (
-        <CreateModal
-          page={page}
-          close={() => setCreating(false)}
-          success={() => {
-            setCreating(false);
-            changed('Published to the community');
           }}
         />
       )}
       {selected && (
         <Detail
           item={selected}
-          page={page === 'home' ? 'competitions' : page}
+          page={page === 'work' ? workSelection : page === 'home' ? 'competitions' : page}
           user={user}
           close={() => setSelected(null)}
           signIn={() => {
@@ -596,7 +747,7 @@ function Card({
     <button className={`content-card ${page}`} onClick={onClick}>
       <div className={`card-art color-${index % 3}`}>
         <Icon size={31} />
-        {page === 'competitions' ? (
+        {page === 'competitions' || page === 'benchmarks' ? (
           <>
             <div className="mountain m1" />
             <div className="mountain m2" />
@@ -629,7 +780,7 @@ function Card({
         <p>{item.description || item.body}</p>
         <div className="card-bottom">
           <span>
-            {page === 'competitions' ? (
+            {page === 'competitions' || page === 'benchmarks' ? (
               <>
                 <Trophy size={14} />
                 {item.prize}
@@ -731,125 +882,6 @@ function AuthModal({
   );
 }
 
-function CreateModal({
-  page,
-  close,
-  success,
-}: {
-  page: Page;
-  close: () => void;
-  success: () => void;
-}) {
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  async function submit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setBusy(true);
-    setError('');
-    const f = new FormData(e.currentTarget);
-    try {
-      await api(`/${page}`, {
-        method: 'POST',
-        body: page === 'datasets' ? f : JSON.stringify(Object.fromEntries(f)),
-      });
-      success();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <Modal
-      title={
-        page === 'datasets'
-          ? 'Share a dataset'
-          : page === 'notebooks'
-            ? 'Create a notebook'
-            : page === 'models'
-              ? 'Publish a model card'
-              : 'Start a discussion'
-      }
-      close={close}
-    >
-      <p className="muted">Published entries are visible to everyone in this workspace.</p>
-      <form onSubmit={submit}>
-        <label>
-          Title
-          <input name="title" required minLength={3} maxLength={160} />
-        </label>
-        <label>
-          {page === 'discussions' ? 'Your question or idea' : 'Description'}
-          <textarea
-            name={page === 'discussions' ? 'body' : 'description'}
-            required
-            minLength={3}
-            maxLength={5000}
-            rows={3}
-          />
-        </label>
-        {page === 'datasets' && (
-          <>
-            <label>
-              Tags
-              <input name="tags" placeholder="tabular, regression" maxLength={300} />
-            </label>
-            <label>
-              CSV file <small>UTF-8, up to 10 MB</small>
-              <input name="file" type="file" accept=".csv" required />
-            </label>
-          </>
-        )}
-        {(page === 'datasets' || page === 'models') && (
-          <label>
-            License
-            <input name="license" defaultValue="CC0-1.0" required maxLength={80} />
-          </label>
-        )}
-        {page === 'models' && (
-          <>
-            <label>
-              Framework
-              <input
-                name="framework"
-                placeholder="PyTorch, scikit-learn…"
-                required
-                maxLength={80}
-              />
-            </label>
-            <label>
-              Model or documentation URL
-              <input name="url" type="url" placeholder="https://…" required />
-            </label>
-            <small>This publishes metadata and a link, not a hosted model.</small>
-          </>
-        )}
-        {page === 'notebooks' && (
-          <label>
-            Python code
-            <textarea
-              className="code-editor"
-              name="code"
-              defaultValue={starterCode}
-              rows={8}
-              maxLength={100000}
-            />
-          </label>
-        )}
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
-        <button className="button" disabled={busy}>
-          {busy ? 'Publishing…' : 'Publish'}
-          <ArrowRight size={16} />
-        </button>
-      </form>
-    </Modal>
-  );
-}
-
 function Detail({
   item: initial,
   page,
@@ -893,8 +925,8 @@ function Detail({
         .catch((e) => {
           if (active) setError(e.message);
         });
-    if (page === 'competitions' && user)
-      api<typeof submissions>(`/competitions/${item.id}/submissions`)
+    if ((page === 'competitions' || page === 'benchmarks') && user)
+      api<typeof submissions>(`/${page}/${item.id}/submissions`)
         .then((data) => {
           if (active) setSubmissions(data);
         })
@@ -965,12 +997,16 @@ function Detail({
           </a>
         </>
       )}
-      {page === 'competitions' && (
+      {(page === 'competitions' || page === 'benchmarks') && (
         <>
           <div className="pill-row">
             <span>{item.metric} · lower is better</span>
             <span>{item.participants} participants</span>
-            <span>Closes {item.deadline?.slice(0, 10)}</span>
+            <span>
+              {page === 'benchmarks'
+                ? 'Ongoing benchmark'
+                : `Closes ${item.deadline?.slice(0, 10)}`}
+            </span>
           </div>
           <div className="button-row">
             <button
@@ -978,18 +1014,22 @@ function Detail({
               disabled={busy}
               onClick={() =>
                 act(async () => {
-                  await api(`/competitions/${item.id}/join`, { method: 'POST' });
-                  setItem(await api(`/competitions/${item.id}`));
-                  changed('You joined the competition');
+                  await api(`/${page}/${item.id}/join`, { method: 'POST' });
+                  setItem(await api(`/${page}/${item.id}`));
+                  changed(
+                    page === 'benchmarks'
+                      ? 'You joined the benchmark'
+                      : 'You joined the competition',
+                  );
                 })
               }
             >
-              Join competition
+              {page === 'benchmarks' ? 'Join benchmark' : 'Join competition'}
             </button>
-            <a className="button secondary" href={`/api/competitions/${item.id}/sample`}>
+            <a className="button secondary" href={`/api/${page}/${item.id}/sample`}>
               Sample CSV <Download size={15} />
             </a>
-            <a className="button secondary" href={`/api/competitions/${item.id}/test`}>
+            <a className="button secondary" href={`/api/${page}/${item.id}/test`}>
               Test data <Download size={15} />
             </a>
           </div>
@@ -998,12 +1038,12 @@ function Detail({
               e.preventDefault();
               const f = new FormData(e.currentTarget);
               act(async () => {
-                const result = await api<{ score: number }>(
-                  `/competitions/${item.id}/submissions`,
-                  { method: 'POST', body: f },
-                );
-                setItem(await api(`/competitions/${item.id}`));
-                setSubmissions(await api(`/competitions/${item.id}/submissions`));
+                const result = await api<{ score: number }>(`/${page}/${item.id}/submissions`, {
+                  method: 'POST',
+                  body: f,
+                });
+                setItem(await api(`/${page}/${item.id}`));
+                setSubmissions(await api(`/${page}/${item.id}/submissions`));
                 changed(`Submission scored: ${result.score.toFixed(4)} RMSE`);
               });
             }}
@@ -1067,6 +1107,8 @@ function Detail({
           <NotebookWorkspace
             key={item.id}
             notebookId={item.id}
+            title={item.title}
+            initialCode={item.code || ''}
             signedIn={Boolean(user)}
             signIn={signIn}
           />
@@ -1074,7 +1116,7 @@ function Detail({
             <summary>Community template source</summary>
             <p className="muted">
               This is the published starting point. Changes here do not overwrite an existing
-              private JupyterLab working copy.
+              private notebook working copy.
             </p>
             <label>
               Python source

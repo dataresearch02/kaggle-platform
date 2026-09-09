@@ -1,501 +1,1052 @@
 import { useEffect, useRef, useState } from 'react';
+import CodeMirror from '@uiw/react-codemirror';
+import { python } from '@codemirror/lang-python';
+import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { tags } from '@lezer/highlight';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import DOMPurify from 'dompurify';
 import {
-  Check,
+  ArrowDown,
+  ArrowUp,
   Code2,
-  Download,
-  ExternalLink,
-  FileText,
-  FolderOpen,
+  Menu,
+  ChevronDown,
+  ChevronsRight,
+  Scissors,
+  Copy,
+  Clipboard,
+  PanelRight,
+  Terminal,
   Keyboard,
-  ListTree,
-  LoaderCircle,
-  Moon,
-  PanelLeftClose,
+  List,
+  HelpCircle,
+  X,
+  FileText,
   Play,
+  Plus,
   RotateCcw,
   Save,
   Square,
-  Sun,
+  Trash2,
 } from 'lucide-react';
 import { api } from './api';
-import {
-  execute,
-  getLab,
-  notebookStatus,
-  setFocusMode,
-  type LabApp,
-  type NotebookStatus,
-} from './jupyterBridge';
+import NotebookPanel from './NotebookPanel';
 
-type State = 'idle' | 'starting' | 'ready' | 'stopping' | 'error';
-type Session = { state: 'stopped' | 'starting' | 'ready' | 'stopping' };
+const notebookHighlight = syntaxHighlighting(
+  HighlightStyle.define([
+    { tag: tags.keyword, color: '#008000', fontWeight: '600' },
+    { tag: tags.comment, color: '#5a8c91', fontStyle: 'italic' },
+    { tag: tags.string, color: '#d32f40' },
+    { tag: tags.number, color: '#1976b8' },
+    { tag: tags.function(tags.variableName), color: '#1764a0' },
+  ]),
+);
+
+type Output = {
+  output_type: string;
+  text?: string | string[];
+  data?: Record<string, string | string[]>;
+  ename?: string;
+  evalue?: string;
+  traceback?: string[];
+  execution_count?: number;
+  metadata?: object;
+  transient?: { display_id?: string };
+};
+type Cell = {
+  id: string;
+  cell_type: 'code' | 'markdown' | 'raw';
+  source: string | string[];
+  metadata: object;
+  outputs?: Output[];
+  execution_count?: number | null;
+};
+type Document = {
+  nbformat: 4;
+  nbformat_minor: number;
+  metadata: Record<string, unknown>;
+  cells: Cell[];
+};
+const text = (value?: string | string[]) => (Array.isArray(value) ? value.join('') : value || '');
+const newCell = (type: Cell['cell_type'] = 'code'): Cell => ({
+  id: crypto.randomUUID(),
+  cell_type: type,
+  source: '',
+  metadata: {},
+  ...(type === 'code' ? { outputs: [], execution_count: null } : {}),
+});
+const blank = (code: string): Document => ({
+  nbformat: 4,
+  nbformat_minor: 5,
+  metadata: { kernelspec: { name: 'python3', display_name: 'Python 3', language: 'python' } },
+  cells: [{ ...newCell(), source: code }],
+});
+
+function CellOutput({ output }: { output: Output }) {
+  if (output.output_type === 'error')
+    return (
+      <pre className="cell-error">
+        {(output.traceback?.join('\n') || `${output.ename}: ${output.evalue}`).replace(
+          /\u001b\[[0-9;]*m/g,
+          '',
+        )}
+      </pre>
+    );
+  if (output.output_type === 'stream') return <pre>{text(output.text)}</pre>;
+  const data = output.data || {};
+  if (data['image/png'])
+    return (
+      <img
+        className="cell-plot"
+        alt="Python plot output"
+        src={`data:image/png;base64,${text(data['image/png'])}`}
+      />
+    );
+  if (data['image/jpeg'])
+    return (
+      <img
+        className="cell-plot"
+        alt="Python image output"
+        src={`data:image/jpeg;base64,${text(data['image/jpeg'])}`}
+      />
+    );
+  if (data['text/html'])
+    return (
+      <div
+        className="cell-rich-output"
+        dangerouslySetInnerHTML={{
+          __html: DOMPurify.sanitize(text(data['text/html']), {
+            USE_PROFILES: { html: true },
+            FORBID_TAGS: ['style', 'form', 'input', 'button', 'iframe', 'object', 'embed'],
+          }),
+        }}
+      />
+    );
+  if (data['text/markdown'])
+    return <ReactMarkdown remarkPlugins={[remarkGfm]}>{text(data['text/markdown'])}</ReactMarkdown>;
+  return <pre>{text(data['text/plain'])}</pre>;
+}
 
 export default function NotebookWorkspace({
   notebookId,
   signedIn,
   signIn,
+  draftId,
+  autoStart = false,
+  onSaveDraft,
+  onSavingChange,
+  initialCode = '',
+  title = 'Untitled notebook',
+  onTitleChange,
+  onClose,
+  permanent = false,
 }: {
   notebookId: number;
   signedIn: boolean;
   signIn: () => void;
+  draftId?: string;
+  autoStart?: boolean;
+  onSaveDraft?: () => Promise<void>;
+  onSavingChange?: (saving: boolean) => void;
+  initialCode?: string;
+  title?: string;
+  onTitleChange?: (value: string) => void;
+  onClose?: () => void;
+  permanent?: boolean;
 }) {
-  const [state, setState] = useState<State>('idle');
-  const [url, setUrl] = useState('');
+  const [document, setDocument] = useState<Document>(() => blank(initialCode));
+  const doc = useRef(document);
+  const [state, setState] = useState<'idle' | 'starting' | 'ready'>('idle');
+  const [running, setRunning] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [controlling, setControlling] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const [error, setError] = useState('');
-  const [loaded, setLoaded] = useState(false);
-  const [connected, setConnected] = useState(false);
-  const [status, setStatus] = useState<NotebookStatus | null>(null);
-  const [focus, setFocus] = useState(true);
+  const [savedAt, setSavedAt] = useState('');
+  const [active, setActive] = useState('');
+  const [preview, setPreview] = useState<Record<string, boolean>>({});
   const [dark, setDark] = useState(false);
-  const [files, setFiles] = useState(false);
-  const [shortcuts, setShortcuts] = useState(false);
-  const [bridgeError, setBridgeError] = useState('');
-  const [saved, setSaved] = useState('');
-  const iframe = useRef<HTMLIFrameElement>(null);
-  const lab = useRef<LabApp | null>(null);
-  const focusRef = useRef(focus);
-  focusRef.current = focus;
-
+  const [panel, setPanel] = useState(() => window.innerWidth > 760);
+  const [consoleOpen, setConsoleOpen] = useState(true);
+  const [consoleCommand, setConsoleCommand] = useState('');
+  const [consoleOutputs, setConsoleOutputs] = useState<Output[]>([]);
+  const consoleCell = useRef<Cell>({ ...newCell(), id: 'console' });
+  const [menu, setMenu] = useState('');
+  const [lineNumbers, setLineNumbers] = useState(false);
+  const [help, setHelp] = useState(false);
+  const clipboard = useRef<Cell | null>(null);
+  const [hasClipboard, setHasClipboard] = useState(false);
+  const menuBar = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    lab.current = null;
-    setConnected(false);
-    setStatus(null);
-    setBridgeError('');
-    if (!url) return;
-    let alive = true;
-    let attaching = false;
-    const deadline = Date.now() + 60_000;
-    const timer = setInterval(async () => {
-      const frame = iframe.current;
-      if (!frame) return;
-      const app = getLab(frame);
-      if (!app) {
-        if (Date.now() > deadline)
-          setBridgeError(
-            'Notebook toolbar connection is unavailable. You can still edit in JupyterLab. Restart your server after updating the notebook image.',
-          );
-        return;
-      }
-      if (!lab.current && !attaching) {
-        attaching = true;
-        try {
-          await app.restored;
-          if (!alive) return;
-          lab.current = app;
-          setFocusMode(frame, app, focusRef.current);
-          setConnected(true);
-          setBridgeError('');
-        } catch {
-          if (alive)
-            setBridgeError(
-              'Could not connect notebook controls. Use the JupyterLab controls below.',
-            );
-        }
-      }
-      if (lab.current && alive) {
-        const next = notebookStatus(lab.current);
-        setStatus((previous) =>
-          JSON.stringify(previous) === JSON.stringify(next) ? previous : next,
-        );
-      }
-    }, 500);
-    return () => {
-      alive = false;
-      clearInterval(timer);
+    const close = (event: PointerEvent) => {
+      if (!menuBar.current?.contains(event.target as Node)) setMenu('');
     };
-  }, [url]);
-
-  async function command(id: string, args: Record<string, unknown> = {}) {
-    if (!lab.current) return;
-    setError('');
-    try {
-      await execute(lab.current, id, args);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-  async function save() {
-    const context = lab.current?.shell.currentWidget?.context;
-    if (!context) return;
-    setError('');
-    try {
-      await context.save();
-      setSaved(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-    } catch {
-      setError('Save failed. Keep this workspace open and retry before stopping the server.');
-    }
-  }
-  async function addCell(markdown: boolean) {
-    if (!lab.current) return;
-    setError('');
-    try {
-      await execute(lab.current, 'notebook:insert-cell-below');
-      await execute(
-        lab.current,
-        markdown ? 'notebook:change-cell-to-markdown' : 'notebook:change-cell-to-code',
-      );
-      await execute(lab.current, 'notebook:enter-edit-mode');
-      iframe.current?.contentWindow?.focus();
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-  function toggleFocus() {
-    const next = !focus;
-    setFocus(next);
-    setFiles(false);
-    if (iframe.current && lab.current) setFocusMode(iframe.current, lab.current, next);
-  }
-  function toggleFiles() {
-    if (!lab.current) return;
-    if (files) lab.current.shell.collapseLeft();
-    else lab.current.shell.activateById('filebrowser');
-    setFiles(!files);
-  }
-  async function toggleTheme() {
-    if (!lab.current) return;
-    try {
-      await execute(lab.current, 'apputils:change-theme', {
-        theme: dark ? 'JupyterLab Light' : 'JupyterLab Dark',
-      });
-      setDark(!dark);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && (menu || help)) {
+        event.preventDefault();
+        event.stopPropagation();
+        setMenu('');
+        setHelp(false);
+      }
+    };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', escape, true);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('keydown', escape, true);
+    };
+  }, [menu, help]);
+  const alive = useRef(true);
+  const runController = useRef<AbortController | null>(null);
+  const runInProgress = useRef(false);
+  const saveInProgress = useRef(false);
+  const stopRequested = useRef(false);
   const generation = useRef(0);
-  const abort = useRef<AbortController | null>(null);
-  useEffect(
-    () => () => {
-      generation.current++;
-      abort.current?.abort();
-    },
-    [],
-  );
+  const base = `/editor/${draftId ? 'drafts' : 'notebooks'}/${draftId || notebookId}`;
 
+  function update(change: (previous: Document) => Document, edited = true) {
+    doc.current = change(doc.current);
+    setDocument(doc.current);
+    if (edited) setDirty(true);
+  }
+  function changeCell(id: string, change: Partial<Cell>) {
+    if (id === 'console') {
+      consoleCell.current = { ...consoleCell.current, ...change };
+      setConsoleOutputs(consoleCell.current.outputs || []);
+      return;
+    }
+    update((previous) => ({
+      ...previous,
+      cells: previous.cells.map((cell) => (cell.id === id ? { ...cell, ...change } : cell)),
+    }));
+  }
   async function launch() {
     if (!signedIn) {
       signIn();
       return;
     }
-    const run = ++generation.current;
-    abort.current?.abort();
-    const controller = new AbortController();
-    abort.current = controller;
+    const version = ++generation.current;
     setState('starting');
     setError('');
-    setUrl('');
-    setLoaded(false);
     try {
-      let status = await api<Session>('/notebook-session', {
-        method: 'POST',
-        signal: controller.signal,
-      });
-      const deadline = Date.now() + 240_000;
-      while (status.state !== 'ready') {
-        if (run !== generation.current) return;
-        if (status.state === 'stopped')
-          throw new Error('The notebook server stopped during startup. Please retry.');
-        if (status.state === 'stopping')
-          throw new Error('Your notebook server is stopping. Wait a few seconds and retry.');
-        if (Date.now() > deadline)
-          throw new Error(
-            'Startup is taking longer than expected. Retry to reconnect, or check JupyterHub logs.',
-          );
+      let session = await api<{ state: string }>('/notebook-session', { method: 'POST' });
+      const deadline = Date.now() + 240000;
+      while (session.state !== 'ready') {
+        if (!alive.current || version !== generation.current) return;
+        if (Date.now() > deadline || session.state === 'stopping')
+          throw new Error('Runtime is not ready. Please retry shortly.');
         await new Promise((resolve) => setTimeout(resolve, 1500));
-        if (run !== generation.current) return;
-        status = await api<Session>('/notebook-session', { signal: controller.signal });
+        session = await api('/notebook-session');
       }
-      const result = await api<{ url: string }>(`/notebooks/${notebookId}/open`, {
-        method: 'POST',
-        signal: controller.signal,
-      });
-      if (run !== generation.current) return;
-      setUrl(result.url);
+      if (!alive.current || version !== generation.current) return;
+      const loaded = await api<Document>(`${base}/document`);
+      if (!alive.current || version !== generation.current) return;
+      loaded.cells = loaded.cells.map((cell) => ({ ...cell, id: cell.id || crypto.randomUUID() }));
+      if (!loaded.cells.length) loaded.cells.push(newCell());
+      if (draftId && loaded.cells.length === 1 && !text(loaded.cells[0].source).trim()) {
+        loaded.cells[0].source =
+          '# Python libraries for data analysis\nimport numpy as np\nimport pandas as pd\n\n# Use Add Input to add a dataset loader.\n# Write code below, then press Shift+Enter to run.\n';
+      }
+      update(() => loaded, false);
+      setDirty(false);
+      setActive(loaded.cells[0].id);
       setState('ready');
+      setPreview(
+        Object.fromEntries(
+          loaded.cells
+            .filter((cell) => cell.cell_type === 'markdown')
+            .map((cell) => [cell.id, true]),
+        ),
+      );
     } catch (e) {
-      if (run !== generation.current) return;
-      setError((e as Error).message);
-      setState('error');
+      if (alive.current) {
+        setError((e as Error).message);
+        setState('idle');
+      }
     }
   }
+  useEffect(() => {
+    alive.current = true;
+    if (autoStart) void launch();
+    return () => {
+      alive.current = false;
+      generation.current++;
+      runController.current?.abort();
+    };
+  }, []);
 
-  async function stop() {
-    setState('stopping');
+  async function save() {
+    if (state !== 'ready' || runInProgress.current || saveInProgress.current) return;
+    saveInProgress.current = true;
+    setSaving(true);
+    onSavingChange?.(true);
+    setError('');
+    const snapshot = doc.current;
+    try {
+      await api(`${base}/document`, { method: 'PUT', body: JSON.stringify(snapshot) });
+      await onSaveDraft?.();
+      if (alive.current) {
+        setDirty(doc.current !== snapshot);
+        setSavedAt(new Date().toLocaleTimeString());
+      }
+    } catch (e) {
+      if (alive.current) setError((e as Error).message);
+    } finally {
+      saveInProgress.current = false;
+      if (alive.current) setSaving(false);
+      onSavingChange?.(false);
+    }
+  }
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        void saveRef.current();
+      }
+    };
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
+  }, []);
+
+  async function executeCell(cell: Cell) {
+    if (cell.cell_type !== 'code') {
+      setPreview((previous) => ({ ...previous, [cell.id]: true }));
+      return true;
+    }
+    setRunning(cell.id);
+    changeCell(cell.id, { outputs: [], execution_count: null });
+    const controller = new AbortController();
+    runController.current = controller;
+    const response = await fetch(`/api${base}/execute`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-Arena-Client': 'web' },
+      body: JSON.stringify({ code: text(cell.source) }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.detail || 'Execution failed');
+    }
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let failed = false;
+    let completed = false;
+    let clearNext = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop()!;
+      for (const line of lines.filter(Boolean)) {
+        const message = JSON.parse(line);
+        if (message.type === 'failure') throw new Error(message.message);
+        if (message.type === 'done') {
+          completed = true;
+          continue;
+        }
+        const content = message.content;
+        const current =
+          cell.id === 'console'
+            ? consoleCell.current
+            : doc.current.cells.find((item) => item.id === cell.id);
+        if (!current) continue;
+        if (message.type === 'execute_input') {
+          changeCell(cell.id, { execution_count: content.execution_count });
+          continue;
+        }
+        if (message.type === 'clear_output') {
+          if (content.wait) clearNext = true;
+          else changeCell(cell.id, { outputs: [] });
+          continue;
+        }
+        let outputs = clearNext ? [] : [...(current.outputs || [])];
+        clearNext = false;
+        if (message.type === 'update_display_data') {
+          outputs = outputs.map((output) =>
+            output.transient?.display_id === content.transient?.display_id
+              ? { ...output, data: content.data }
+              : output,
+          );
+        } else {
+          if (message.type === 'error') failed = true;
+          outputs.push({ ...content, output_type: message.type });
+        }
+        changeCell(cell.id, { outputs });
+      }
+    }
+    if (!completed) throw new Error('The execution connection ended. Check the cell and retry.');
+    return !failed;
+  }
+  async function run(all = false, id = active) {
+    if (state !== 'ready' || runInProgress.current || saving) return;
+    runInProgress.current = true;
+    stopRequested.current = false;
     setError('');
     try {
-      let status = await api<Session>('/notebook-session', { method: 'DELETE' });
-      const deadline = Date.now() + 60_000;
-      while (status.state === 'stopping') {
-        if (Date.now() > deadline)
-          throw new Error(
-            'The server is still stopping. Reopen this notebook to check its status.',
-          );
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        status = await api<Session>('/notebook-session');
+      for (const cell of all
+        ? [...doc.current.cells]
+        : doc.current.cells.filter((cell) => cell.id === id)) {
+        if (stopRequested.current || !alive.current) break;
+        if (!(await executeCell(cell))) break;
       }
-      setUrl('');
-      setLoaded(false);
-      setState('idle');
     } catch (e) {
-      setError((e as Error).message);
-      setState(url ? 'ready' : 'error');
+      if (alive.current && (e as Error).name !== 'AbortError') setError((e as Error).message);
+    } finally {
+      runInProgress.current = false;
+      if (alive.current) setRunning(null);
     }
   }
-
-  const editable = connected && Boolean(status) && state === 'ready';
-  const kernelBusy = status?.kernel === 'busy';
+  async function control(action: 'interrupt' | 'restart') {
+    stopRequested.current = true;
+    setControlling(true);
+    try {
+      await api(`${base}/kernel/${action}`, { method: 'POST' });
+      if (action === 'restart')
+        update((previous) => ({
+          ...previous,
+          cells: previous.cells.map((cell) => ({ ...cell, execution_count: null })),
+        }));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setControlling(false);
+    }
+  }
+  function insert(type: Cell['cell_type'], source = '') {
+    const cell = { ...newCell(type), source };
+    const index = doc.current.cells.findIndex((item) => item.id === active);
+    update((previous) => ({
+      ...previous,
+      cells: [...previous.cells.slice(0, index + 1), cell, ...previous.cells.slice(index + 1)],
+    }));
+    setActive(cell.id);
+  }
+  function move(id: string, delta: number) {
+    const cells = [...doc.current.cells];
+    const index = cells.findIndex((cell) => cell.id === id);
+    const next = index + delta;
+    if (next < 0 || next >= cells.length) return;
+    [cells[index], cells[next]] = [cells[next], cells[index]];
+    update((previous) => ({ ...previous, cells }));
+  }
+  const busy = state !== 'ready' || !!running || saving || controlling;
+  const selected = document.cells.find((cell) => cell.id === active) || document.cells[0];
+  const inputs = (document.metadata.arena_inputs || []) as {
+    id: number;
+    title: string;
+    filename?: string;
+  }[];
+  const headings = document.cells
+    .filter((cell) => cell.cell_type === 'markdown')
+    .flatMap((cell) => {
+      const heading = text(cell.source).match(/^#{1,6}\s+(.+)$/m);
+      return heading ? [{ id: cell.id, title: heading[1] }] : [];
+    });
+  function copyCell(cut = false) {
+    if (!selected || busy) return;
+    clipboard.current = structuredClone(selected);
+    setHasClipboard(true);
+    if (cut) {
+      const cells = doc.current.cells.filter((cell) => cell.id !== selected.id);
+      if (!cells.length) cells.push(newCell());
+      update((previous) => ({ ...previous, cells }));
+      setActive(cells[0].id);
+    }
+  }
+  function pasteCell() {
+    if (!clipboard.current || busy) return;
+    const cell = { ...structuredClone(clipboard.current), id: crypto.randomUUID() };
+    const index = doc.current.cells.findIndex((item) => item.id === active);
+    update((previous) => ({
+      ...previous,
+      cells: [...previous.cells.slice(0, index + 1), cell, ...previous.cells.slice(index + 1)],
+    }));
+    setActive(cell.id);
+  }
+  async function runConsole() {
+    if (busy || runInProgress.current || !consoleCommand.trim()) return;
+    const code = consoleCommand;
+    setConsoleCommand('');
+    runInProgress.current = true;
+    setError('');
+    try {
+      await executeCell({ ...newCell(), id: 'console', source: code });
+    } catch (e) {
+      if (alive.current) setError((e as Error).message);
+    } finally {
+      runInProgress.current = false;
+      if (alive.current) setRunning(null);
+    }
+  }
+  async function attach(item: { id: number; title: string; filename?: string }) {
+    const { path } = await api<{ path: string }>(`${base}/inputs/${item.id}`, { method: 'POST' });
+    update((previous) => ({
+      ...previous,
+      metadata: { ...previous.metadata, arena_inputs: [...inputs, { ...item, path }] },
+    }));
+    insert(
+      'code',
+      `import pandas as pd\n\n# Arena dataset ${item.id}\ndf = pd.read_csv(${JSON.stringify(path)})\ndf.head()`,
+    );
+  }
+  const actions: Record<string, { label: string; action: () => void; disabled?: boolean }[]> = {
+    File: [
+      { label: 'Save notebook', action: () => void save(), disabled: busy },
+      {
+        label: 'Download saved notebook',
+        action: () => {
+          window.location.href = `/api/notebooks/${notebookId}/working-copy`;
+        },
+        disabled: !!draftId || busy,
+      },
+    ],
+    Edit: [
+      { label: 'Cut cell', action: () => copyCell(true), disabled: busy },
+      { label: 'Copy cell', action: () => copyCell(), disabled: busy },
+      { label: 'Paste cell', action: pasteCell, disabled: busy || !hasClipboard },
+      {
+        label: 'Clear all outputs',
+        action: () =>
+          update((previous) => ({
+            ...previous,
+            cells: previous.cells.map((cell) =>
+              cell.cell_type === 'code' ? { ...cell, outputs: [], execution_count: null } : cell,
+            ),
+          })),
+        disabled: busy,
+      },
+    ],
+    View: [
+      { label: `${panel ? 'Hide' : 'Show'} notebook panel`, action: () => setPanel(!panel) },
+      {
+        label: `${consoleOpen ? 'Hide' : 'Show'} console`,
+        action: () => setConsoleOpen(!consoleOpen),
+      },
+      {
+        label: `${lineNumbers ? 'Hide' : 'Show'} line numbers`,
+        action: () => setLineNumbers(!lineNumbers),
+      },
+    ],
+    Run: [
+      { label: 'Run selected cell', action: () => void run(), disabled: busy },
+      { label: 'Run all cells', action: () => void run(true), disabled: busy },
+      {
+        label: 'Interrupt execution',
+        action: () => void control('interrupt'),
+        disabled: !running || controlling,
+      },
+      { label: 'Restart Python kernel', action: () => void control('restart'), disabled: busy },
+    ],
+    Settings: [
+      { label: dark ? 'Use light theme' : 'Use dark theme', action: () => setDark(!dark) },
+    ],
+    'Add-ons': [{ label: 'Add a dataset input', action: () => setPanel(true) }],
+    Help: [{ label: 'Keyboard shortcuts and notebook help', action: () => setHelp(true) }],
+  };
   return (
     <section
-      className={`notebook-workspace studio ${dark ? 'studio-dark' : ''}`}
-      aria-label="JupyterLab workspace"
+      className={`arena-notebook ${dark ? 'arena-notebook-dark' : ''}`}
+      aria-label="Arena notebook editor"
     >
-      <div className="studio-topbar">
-        <div className="studio-identity">
-          <span className="python-badge">
-            <Code2 size={19} />
+      <nav className="notebook-rail" aria-label="Notebook workspace navigation">
+        <button
+          aria-label="Toggle notebook panel"
+          title="Toggle notebook panel"
+          onClick={() => setPanel(!panel)}
+        >
+          <Menu size={22} />
+        </button>
+        <button
+          className="notebook-rail-create"
+          aria-label="Insert code cell"
+          title="Insert code cell"
+          disabled={busy}
+          onClick={() => insert('code')}
+        >
+          <Plus size={34} />
+        </button>
+        <button
+          aria-label="Show notebook inputs"
+          title="Notebook inputs"
+          onClick={() => setPanel(true)}
+        >
+          <FileText size={21} />
+        </button>
+        <button
+          aria-label="Focus selected cell"
+          title="Editor"
+          onClick={() =>
+            window.document
+              .getElementById(`cell-${selected?.id}`)
+              ?.scrollIntoView({ block: 'center' })
+          }
+        >
+          <Code2 size={21} />
+        </button>
+        <button
+          aria-label="Show table of contents"
+          title="Table of contents"
+          onClick={() => setPanel(true)}
+        >
+          <List size={21} />
+        </button>
+        <button aria-label="Notebook help" title="Help" onClick={() => setHelp(true)}>
+          <HelpCircle size={21} />
+        </button>
+        <button
+          className="notebook-rail-bottom"
+          aria-label="Toggle console"
+          title="Console"
+          onClick={() => setConsoleOpen(!consoleOpen)}
+        >
+          <Terminal size={21} />
+        </button>
+      </nav>
+      <header className="notebook-topbar new-notebook-header">
+        <div className="notebook-title-row">
+          {onTitleChange ? (
+            <input
+              aria-label="Notebook title"
+              value={title}
+              maxLength={160}
+              minLength={3}
+              onChange={(event) => {
+                onTitleChange(event.target.value);
+                setDirty(true);
+              }}
+            />
+          ) : (
+            <h1>{title}</h1>
+          )}
+          <span className="notebook-save-state">
+            {dirty
+              ? 'Unsaved changes'
+              : savedAt
+                ? 'Saved permanently'
+                : draftId
+                  ? 'Temporary draft'
+                  : 'Private working copy'}
           </span>
-          <div>
-            <strong>Python notebook</strong>
-            <span>Private working copy · JupyterHub</span>
-          </div>
-        </div>
-        <div className="studio-session">
-          <span
-            className={`kernel-dot ${kernelBusy ? 'busy' : state === 'ready' ? 'online' : ''}`}
-          />
-          <span role="status">
-            {state === 'ready'
-              ? `Python 3 · ${status?.kernel || 'connecting'}`
-              : state === 'starting'
-                ? 'Starting server…'
-                : state === 'stopping'
-                  ? 'Stopping server…'
-                  : 'Session offline'}
-          </span>
-        </div>
-        <div className="studio-actions">
-          {(state === 'idle' || state === 'error') && (
-            <button className="button" onClick={launch}>
-              <Play size={15} />
-              {state === 'error' ? 'Retry JupyterLab' : 'Open in JupyterLab'}
+          <button
+            className="notebook-save-button"
+            aria-label="Save"
+            disabled={busy}
+            onClick={() => void save()}
+          >
+            <Save size={17} />
+            {saving ? 'Saving…' : 'Save notebook'}
+            <span>{permanent || savedAt ? '✓' : '0'}</span>
+          </button>
+          {onClose && (
+            <button
+              className="notebook-close"
+              aria-label="Close notebook editor"
+              disabled={saving}
+              onClick={onClose}
+            >
+              <X size={21} />
             </button>
           )}
-          {(state === 'starting' || state === 'stopping') && (
-            <LoaderCircle className="spin" size={18} aria-label="Please wait" />
-          )}
-          {url && (
-            <>
-              <button className="studio-save" disabled={!editable} onClick={save}>
-                <Save size={15} />
-                Save
-              </button>
-              <a
-                className="icon-button"
-                href={`/api/notebooks/${notebookId}/working-copy`}
-                title="Download saved working copy"
-                aria-label="Download working copy"
+        </div>
+        <div className="notebook-menubar" ref={menuBar}>
+          {Object.entries(actions).map(([name, entries]) => (
+            <div className="notebook-menu" key={name}>
+              <button
+                aria-haspopup="menu"
+                aria-expanded={menu === name}
+                onClick={() => setMenu(menu === name ? '' : name)}
               >
-                <Download size={17} />
-              </a>
-              <a
-                className="icon-button"
-                href={url}
-                target="_blank"
-                rel="noreferrer"
-                aria-label="Open JupyterLab in a new tab"
-              >
-                <ExternalLink size={16} />
-              </a>
-              <button className="studio-stop" onClick={stop} disabled={state === 'stopping'}>
-                <Square size={13} />
-                Stop server
+                {name}
               </button>
-            </>
-          )}
-        </div>
-      </div>
-      {url && (
-        <div className="studio-commandbar" aria-label="Notebook commands">
-          <div className="command-group">
-            <button
-              className="run-cell"
-              disabled={!editable}
-              onClick={() => command('notebook:run-cell-and-select-next')}
-              title="Run selected cell (Shift+Enter)"
-            >
-              <Play size={14} fill="currentColor" />
-              Run cell
-            </button>
-            <button
-              disabled={!editable || kernelBusy}
-              onClick={() => command('notebook:run-all-cells')}
-            >
-              <Play size={14} />
-              Run all
-            </button>
-            <button
-              disabled={!editable}
-              onClick={() => command('notebook:interrupt-kernel')}
-              title="Interrupt the current computation"
-            >
-              <Square size={13} />
-              Interrupt
-            </button>
-            <button
-              disabled={!editable}
-              onClick={() => command('notebook:restart-kernel')}
-              title="Restart the Python kernel"
-            >
-              <RotateCcw size={14} />
-              Restart
-            </button>
-          </div>
-          <div className="command-group">
-            <button disabled={!editable} onClick={() => addCell(false)}>
-              <Code2 size={15} />
-              Code
-            </button>
-            <button disabled={!editable} onClick={() => addCell(true)}>
-              <FileText size={15} />
-              Markdown
-            </button>
-          </div>
-          <div className="command-group layout-commands">
-            <button disabled={!connected} aria-pressed={files} onClick={toggleFiles}>
-              <FolderOpen size={15} />
-              Files
-            </button>
-            <button disabled={!connected} onClick={() => command('toc:show-panel')}>
-              <ListTree size={15} />
-              Outline
-            </button>
-            <button disabled={!connected} aria-pressed={!focus} onClick={toggleFocus}>
-              <PanelLeftClose size={15} />
-              {focus ? 'Full IDE' : 'Focus view'}
-            </button>
-            <button
-              disabled={!connected}
-              aria-label={dark ? 'Use light theme' : 'Use dark theme'}
-              onClick={toggleTheme}
-            >
-              {dark ? <Sun size={16} /> : <Moon size={16} />}
-            </button>
-            <button
-              aria-label="Keyboard shortcuts"
-              aria-expanded={shortcuts}
-              onClick={() => setShortcuts(!shortcuts)}
-            >
-              <Keyboard size={16} />
-            </button>
-          </div>
-        </div>
-      )}
-      {shortcuts && (
-        <div className="studio-shortcuts">
-          <span>
-            <kbd>Shift</kbd> + <kbd>Enter</kbd> Run cell
-          </span>
-          <span>
-            <kbd>Ctrl / ⌘</kbd> + <kbd>S</kbd> Save
-          </span>
-          <span>
-            <kbd>Esc</kbd> then <kbd>A / B</kbd> Insert above / below
-          </span>
-          <span>
-            <kbd>Esc</kbd> then <kbd>M / Y</kbd> Markdown / code
-          </span>
-          <span>Double-click rendered Markdown to edit</span>
-        </div>
-      )}
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
-      {bridgeError && (
-        <p className="info" role="status">
-          {bridgeError}
-        </p>
-      )}
-      {!url && (
-        <div className="studio-welcome">
-          <div className="welcome-code">
-            <Code2 size={36} />
-          </div>
-          <span className="eyebrow">YOUR NEXT EXPERIMENT STARTS HERE</span>
-          <h3>
-            {state === 'starting'
-              ? 'Getting your workspace ready'
-              : 'Think in cells. Discover in code.'}
-          </h3>
-          <p>
-            {state === 'starting'
-              ? 'Starting your personal Python environment and restoring your files. This can take a few minutes on the first launch.'
-              : 'A focused notebook for code, explanations, and results. Run Python, explore tables, and bring your ideas to life.'}
-          </p>
-          <div className="studio-features">
-            <span>
-              <Code2 size={18} />
-              Python + scientific libraries
-            </span>
-            <span>
-              <FileText size={18} />
-              Markdown & rich outputs
-            </span>
-            <span>
-              <Save size={18} />
-              Persistent working files
-            </span>
-          </div>
-          <small>Open in JupyterLab above to begin. Your community template stays unchanged.</small>
-        </div>
-      )}
-      {url && (
-        <div className="studio-canvas">
-          {!loaded && (
-            <div className="studio-loading" role="status">
-              <LoaderCircle className="spin" size={21} />
-              Opening your notebook…
+              {menu === name && (
+                <div className="notebook-menu-popover" role="menu">
+                  {entries.map((entry) => (
+                    <button
+                      role="menuitem"
+                      key={entry.label}
+                      disabled={entry.disabled}
+                      onClick={() => {
+                        entry.action();
+                        setMenu('');
+                      }}
+                    >
+                      {entry.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
+          ))}
+        </div>
+      </header>
+      <div className={`notebook-body ${panel ? '' : 'notebook-panel-hidden'}`}>
+        <div className="notebook-main">
+          <header className="arena-notebook-toolbar">
+            <button
+              aria-label="Add code cell"
+              title="Add code cell"
+              disabled={busy}
+              onClick={() => insert('code')}
+            >
+              <Plus size={22} />
+            </button>
+            <span className="notebook-tool-divider" />
+            <button
+              aria-label="Cut cell"
+              title="Cut cell"
+              disabled={busy}
+              onClick={() => copyCell(true)}
+            >
+              <Scissors size={21} />
+            </button>
+            <button
+              aria-label="Copy cell"
+              title="Copy cell"
+              disabled={busy}
+              onClick={() => copyCell()}
+            >
+              <Copy size={21} />
+            </button>
+            <button
+              aria-label="Paste cell"
+              title="Paste cell"
+              disabled={busy || !hasClipboard}
+              onClick={pasteCell}
+            >
+              <Clipboard size={21} />
+            </button>
+            <span className="notebook-tool-divider" />
+            <button
+              aria-label="Run cell"
+              title="Run cell · Shift+Enter"
+              disabled={busy}
+              onClick={() => void run()}
+            >
+              <Play size={19} />
+            </button>
+            <button aria-label="Run all" disabled={busy} onClick={() => void run(true)}>
+              <ChevronsRight size={22} /> Run All
+            </button>
+            <span className="notebook-tool-divider" />
+            <select
+              aria-label="Cell type"
+              value={selected?.cell_type || 'code'}
+              disabled={busy}
+              onChange={(event) =>
+                changeCell(selected.id, {
+                  cell_type: event.target.value as Cell['cell_type'],
+                  outputs: [],
+                  execution_count: null,
+                })
+              }
+            >
+              <option value="code">Code</option>
+              <option value="markdown">Markdown</option>
+              <option value="raw">Raw</option>
+            </select>
+            <span className="native-kernel">
+              <span
+                className={`kernel-dot ${running ? 'busy' : state === 'ready' ? 'online' : ''}`}
+              />
+              {running
+                ? 'Session running'
+                : state === 'ready'
+                  ? 'Session ready'
+                  : state === 'starting'
+                    ? 'Starting session…'
+                    : 'Session off'}
+            </span>
+            {state === 'idle' && <button onClick={() => void launch()}>Start session</button>}
+            <button
+              aria-label="Interrupt"
+              title="Interrupt"
+              disabled={!running || controlling}
+              onClick={() => void control('interrupt')}
+            >
+              <Square size={18} />
+            </button>
+            <button
+              aria-label="Restart kernel"
+              title="Restart kernel"
+              disabled={busy}
+              onClick={() => void control('restart')}
+            >
+              <RotateCcw size={19} />
+            </button>
+            <button
+              aria-label="Show or hide notebook panel"
+              title="Notebook panel"
+              onClick={() => setPanel(!panel)}
+            >
+              <PanelRight size={18} />
+            </button>
+          </header>
+          {error && (
+            <p className="error native-notebook-error" role="alert">
+              {error}
+            </p>
           )}
-          <iframe
-            ref={iframe}
-            key={url}
-            className="jupyter-frame"
-            title="JupyterLab notebook editor"
-            src={url}
-            allow="clipboard-read; clipboard-write"
-            onLoad={() => setLoaded(true)}
+          {state === 'starting' && (
+            <p className="native-notebook-loading" role="status">
+              Starting your Python runtime… Your notebook will be ready shortly.
+            </p>
+          )}
+          <div className="arena-cells">
+            {document.cells.map((cell, index) => (
+              <article
+                key={cell.id}
+                id={`cell-${cell.id}`}
+                className={`arena-cell ${active === cell.id ? 'active' : ''}`}
+                onFocus={() => setActive(cell.id)}
+                onClick={() => setActive(cell.id)}
+                onKeyDown={(event) => {
+                  if (event.shiftKey && event.key === 'Enter') {
+                    event.preventDefault();
+                    void run(false, cell.id);
+                  }
+                }}
+              >
+                <div className="arena-cell-heading">
+                  <span>
+                    {cell.cell_type === 'code'
+                      ? `[${running === cell.id ? '*' : (cell.execution_count ?? ' ')}]`
+                      : ''}{' '}
+                    <small>Cell {index + 1}</small>
+                  </span>
+                  <div>
+                    <button
+                      aria-label={`Run cell ${index + 1}`}
+                      disabled={state !== 'ready' || !!running || saving || controlling}
+                      onClick={() => void run(false, cell.id)}
+                    >
+                      <Play size={14} />
+                    </button>
+                    {cell.cell_type !== 'code' && (
+                      <button
+                        onClick={() =>
+                          setPreview((previous) => ({ ...previous, [cell.id]: !previous[cell.id] }))
+                        }
+                      >
+                        {preview[cell.id] ? 'Edit Markdown' : 'Preview'}
+                      </button>
+                    )}
+                    <button
+                      aria-label={`Move cell ${index + 1} up`}
+                      disabled={index === 0 || !!running || saving}
+                      onClick={() => move(cell.id, -1)}
+                    >
+                      <ArrowUp size={14} />
+                    </button>
+                    <button
+                      aria-label={`Move cell ${index + 1} down`}
+                      disabled={index === document.cells.length - 1 || !!running || saving}
+                      onClick={() => move(cell.id, 1)}
+                    >
+                      <ArrowDown size={14} />
+                    </button>
+                    <button
+                      aria-label={`Delete cell ${index + 1}`}
+                      disabled={document.cells.length === 1 || !!running || saving}
+                      onClick={() =>
+                        update((previous) => ({
+                          ...previous,
+                          cells: previous.cells.filter((item) => item.id !== cell.id),
+                        }))
+                      }
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+                {cell.cell_type !== 'code' && preview[cell.id] ? (
+                  <div
+                    className="arena-markdown"
+                    onDoubleClick={() =>
+                      setPreview((previous) => ({ ...previous, [cell.id]: false }))
+                    }
+                  >
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {text(cell.source) || '*Empty Markdown cell*'}
+                    </ReactMarkdown>
+                  </div>
+                ) : (
+                  <CodeMirror
+                    aria-label={`${cell.cell_type === 'code' ? 'Code' : 'Markdown'} cell ${index + 1}`}
+                    value={text(cell.source)}
+                    extensions={
+                      cell.cell_type === 'code'
+                        ? [python(), ...(dark ? [] : [notebookHighlight])]
+                        : []
+                    }
+                    theme={dark ? 'dark' : 'light'}
+                    editable={state === 'ready' && !saving && !running}
+                    minHeight="90px"
+                    onChange={(value) => changeCell(cell.id, { source: value })}
+                    basicSetup={{
+                      lineNumbers: lineNumbers && cell.cell_type === 'code',
+                      foldGutter: false,
+                      highlightActiveLine: false,
+                    }}
+                  />
+                )}
+                {!!cell.outputs?.length && (
+                  <div className="arena-cell-outputs" aria-label={`Output cell ${index + 1}`}>
+                    {cell.outputs.map((output, i) => (
+                      <CellOutput key={i} output={output} />
+                    ))}
+                  </div>
+                )}
+              </article>
+            ))}
+            <div className="arena-add-cell">
+              <button
+                disabled={state !== 'ready' || !!running || saving || controlling}
+                onClick={() => insert('code')}
+              >
+                <Plus size={15} />
+                <Code2 size={16} />
+                Code
+              </button>
+              <button
+                disabled={state !== 'ready' || !!running || saving || controlling}
+                onClick={() => insert('markdown')}
+              >
+                <Plus size={15} />
+                <FileText size={16} />
+                Markdown
+              </button>
+            </div>
+          </div>
+          {consoleOpen && (
+            <section className="notebook-console" aria-label="Python console">
+              <header>
+                <button onClick={() => setConsoleOpen(false)}>
+                  Console <X size={17} />
+                </button>
+                <button
+                  aria-label="Clear console"
+                  disabled={!!running}
+                  onClick={() => {
+                    consoleCell.current.outputs = [];
+                    setConsoleOutputs([]);
+                  }}
+                >
+                  <Trash2 size={15} /> Clear
+                </button>
+              </header>
+              <div className="notebook-console-output" aria-live="polite">
+                {consoleOutputs.length ? (
+                  consoleOutputs.map((output, index) => <CellOutput key={index} output={output} />)
+                ) : (
+                  <pre>
+                    {state === 'ready'
+                      ? 'Your notebook is connected to a Python runtime.\nEnter Python code below and press Enter.'
+                      : 'Start a session to execute Python commands.'}
+                  </pre>
+                )}
+              </div>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void runConsole();
+                }}
+              >
+                <ChevronDown size={17} />
+                <input
+                  aria-label="Console command"
+                  placeholder="Enter console command here"
+                  value={consoleCommand}
+                  disabled={busy}
+                  onChange={(event) => setConsoleCommand(event.target.value)}
+                />
+                <button
+                  type="submit"
+                  disabled={busy || !consoleCommand.trim()}
+                  aria-label="Execute console command"
+                >
+                  <Play size={15} />
+                </button>
+              </form>
+            </section>
+          )}
+          <footer className="arena-notebook-footer">
+            <div>
+              <button
+                aria-label="Toggle Python console"
+                onClick={() => setConsoleOpen(!consoleOpen)}
+              >
+                <Terminal size={18} />
+              </button>
+              <button aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
+                <Keyboard size={18} />
+              </button>
+            </div>
+            <div className="arena-notebook-subbar">
+              <span>
+                {dirty
+                  ? 'Unsaved changes'
+                  : savedAt
+                    ? `Saved ${savedAt}`
+                    : draftId
+                      ? 'Temporary · Save to keep'
+                      : 'Private working copy'}
+              </span>
+              <span>{document.cells.length} cells</span>
+            </div>
+          </footer>
+        </div>
+        {panel && (
+          <NotebookPanel
+            inputs={inputs}
+            attach={attach}
+            headings={headings}
+            jump={(id) => {
+              setActive(id);
+              window.document
+                .getElementById(`cell-${id}`)
+                ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            }}
+            ready={!busy}
+            notebookId={notebookId}
+            draft={!!draftId}
+            cellCount={document.cells.length}
+            outputCount={document.cells.reduce(
+              (count, cell) => count + (cell.outputs?.length || 0),
+              0,
+            )}
           />
+        )}
+      </div>
+      {help && (
+        <div className="notebook-help" role="dialog" aria-label="Notebook help">
+          <header>
+            <h2>Notebook shortcuts</h2>
+            <button aria-label="Close notebook help" onClick={() => setHelp(false)}>
+              <X size={20} />
+            </button>
+          </header>
+          <p>
+            <kbd>Shift + Enter</kbd> Run selected cell
+          </p>
+          <p>
+            <kbd>Ctrl / ⌘ + S</kbd> Save notebook permanently
+          </p>
+          <p>
+            Double-click Markdown to edit. Use the toolbar to copy, cut, paste, or change a cell’s
+            type. The console shares variables with notebook cells.
+          </p>
+          <p>
+            New notebooks remain temporary until you save. Save includes cell sources and outputs.
+            Interactive widgets and input prompts are not supported.
+          </p>
         </div>
       )}
-      <div className="studio-statusbar">
-        <span>
-          {status ? (
-            <>
-              <span className={`kernel-dot ${kernelBusy ? 'busy' : 'online'}`} />
-              {status.cells} cells · Cell {status.activeCell} selected
-            </>
-          ) : (
-            'Python 3 environment'
-          )}
-        </span>
-        <span>
-          {status?.dirty ? (
-            'Unsaved changes'
-          ) : status ? (
-            <>
-              <Check size={13} />
-              {saved ? `Saved at ${saved}` : 'All changes saved'}
-            </>
-          ) : (
-            'Files persist between sessions'
-          )}
-        </span>
-        <span className="status-tip">Shift+Enter to run · Closing keeps your server running</span>
-      </div>
     </section>
   );
 }

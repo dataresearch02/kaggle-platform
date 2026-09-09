@@ -130,3 +130,32 @@ class ModelCard(Base):
     license = Column(String(80), nullable=False)
     url = Column(Text, nullable=False)
     created_at = Column(String, default=now)
+
+
+class ChallengeDetails(Base):
+    """Creator metadata for new challenges; legacy competitions remain compatible."""
+
+    __tablename__ = "challenge_details"
+    competition_id = Column(Integer, ForeignKey("competitions.id"), primary_key=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    kind = Column(String(20), nullable=False)
+    test_csv = Column(Text, nullable=False)
+    created_at = Column(String, default=now)
+
+
+class NotebookDraft(Base):
+    __tablename__ = "notebook_drafts"
+    id = Column(String(32), primary_key=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    expires_at = Column(Float, nullable=False)
+    notebook_id = Column(Integer, ForeignKey("notebooks.id"), nullable=True)
+
+
+class WorkFileDeletion(Base):
+    """Durable cleanup jobs committed with removal of a published item."""
+
+    __tablename__ = "work_file_deletions"
+    id = Column(Integer, primary_key=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    kind = Column(String(20), nullable=False)
+    path = Column(String(255), nullable=False)
