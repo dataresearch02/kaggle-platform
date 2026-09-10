@@ -1,0 +1,24 @@
+[
+  {
+    "slug": "iris",
+    "file": "Iris.csv",
+    "url": "https://www.kaggle.com/datasets/uciml/iris",
+    "credit": "UCI Machine Learning; Iris measurements associated with Fisher (1936).",
+    "target": "PetalLengthCm",
+    "group": "Species",
+    "license": "CC0-1.0",
+    "sha256": "600ac44f23c2e6e0ae37daac8ceb2baba4df963efa580eb31b3b576b28e34c55",
+    "retrieved": "2026-09-09"
+  },
+  {
+    "slug": "penguins",
+    "file": "penguins_size.csv",
+    "url": "https://www.kaggle.com/datasets/parulpandey/palmer-archipelago-antarctica-penguin-data",
+    "credit": "Kaggle uploader: Parul Pandey. Data: Kristen Gorman and Palmer Station LTER. Gorman, Williams and Fraser (2014), doi:10.1371/journal.pone.0090081.",
+    "target": "body_mass_g",
+    "group": "species",
+    "license": "CC0-1.0",
+    "sha256": "aa728597b2228a2637e39c6f08e40a80971f4cdac7faf7bc21ff4481ee3e3ae9",
+    "retrieved": "2026-09-09"
+  }
+]

@@ -11,16 +11,25 @@
     "test:hub": "playwright test --config playwright.hub.config.ts"
   },
   "dependencies": {
+    "@codemirror/lang-markdown": "6.5.2",
     "@codemirror/lang-python": "6.2.1",
     "@codemirror/language": "6.12.4",
     "@lezer/highlight": "1.2.3",
     "@uiw/react-codemirror": "4.25.11",
     "dompurify": "3.4.15",
+    "katex": "0.18.7",
     "lucide-react": "0.468.0",
     "react": "19.1.1",
     "react-dom": "19.1.1",
     "react-markdown": "10.1.0",
-    "remark-gfm": "4.0.1"
+    "rehype-katex": "7.0.1",
+    "rehype-raw": "7.0.0",
+    "rehype-sanitize": "6.0.0",
+    "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
+    "remark-parse": "11.0.0",
+    "remark-rehype": "11.1.2",
+    "unified": "11.0.5"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

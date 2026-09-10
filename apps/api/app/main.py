@@ -8,6 +8,7 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import (
     Depends,
@@ -30,6 +31,8 @@ from .models import (
     ChallengeDetails,
     Comment,
     Competition,
+    CompetitionResource,
+    CompetitionPost,
     Course,
     Dataset,
     Discussion,
@@ -51,6 +54,30 @@ from .schemas import (
     NotebookInput,
     WorkUpdate,
 )
+from .competition_teams import router as team_router
+from .models import CompetitionTeam, CompetitionTeamMember
+from .notebook_commits import router as commit_router, commit_worker, migrate_forks
+from .notebook_visibility import visible_notebooks, require_visible
+from .code_pages import optional_user
+from .models import NotebookWorkingCopy, NotebookCommit
+from .code_pages import router as code_router
+from .engagement import router as engagement_router, remove_engagement
+from .models import (
+    NotebookPublication,
+    NotebookBookmark,
+    NotebookShare,
+    NotebookComment,
+)
+from .metadata_routes import router as metadata_router
+from .competition_metadata import (
+    backfill_metadata,
+    initialize_competition,
+    ensure_profile,
+    require_data_access,
+)
+from .models import CompetitionOverview, CompetitionDataFile, DatasetProfile
+from sqlalchemy import update
+from .competition_pages import router as competition_pages_router
 from .work_cleanup import cleanup_work_files, remove_work_file
 from .notebook_drafts import user_lock
 from .notebook_editor import router as editor_router
@@ -66,11 +93,17 @@ async def lifespan(app):
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
         seed(db)
+        backfill_metadata(db)
+        migrate_forks(db)
+    commits = asyncio.create_task(commit_worker())
     cleanup = asyncio.create_task(cleanup_drafts())
     work_cleanup = asyncio.create_task(cleanup_work_files())
     try:
         yield
     finally:
+        commits.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await commits
         work_cleanup.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await work_cleanup
@@ -90,6 +123,12 @@ app = FastAPI(
 app.include_router(notebook_router)
 app.include_router(draft_router)
 app.include_router(editor_router)
+app.include_router(competition_pages_router)
+app.include_router(metadata_router)
+app.include_router(code_router)
+app.include_router(commit_router)
+app.include_router(team_router)
+app.include_router(engagement_router)
 
 
 @app.middleware("http")
@@ -136,6 +175,10 @@ def public(obj, db=None):
     if db and hasattr(obj, "owner_id"):
         owner = db.get(User, obj.owner_id)
         result["owner"] = owner.username if owner else "Deleted user"
+    if db and isinstance(obj, Notebook):
+        from .notebook_visibility import published_code
+
+        result["code"] = published_code(db, obj)
     if db and isinstance(obj, Competition):
         details = db.get(ChallengeDetails, obj.id)
         if details:
@@ -293,6 +336,8 @@ async def upload_dataset(
     )
     db.add(obj)
     try:
+        db.flush()
+        ensure_profile(db, obj)
         db.commit()
     except Exception:
         db.rollback()
@@ -326,25 +371,59 @@ def download_dataset(id: int, db: DBSession = Depends(get_db)):
     )
 
 
-@app.get("/api/competitions")
-def competitions(q: str = "", db: DBSession = Depends(get_db)):
-    return challenge_listing(db, q, "competition")
-
-
-def challenge_listing(db, q, kind):
+def challenge_query(kind):
     query = select(Competition).outerjoin(ChallengeDetails)
     if kind == "benchmark":
-        query = query.where(ChallengeDetails.kind == "benchmark")
-    else:
+        return query.where(ChallengeDetails.kind == "benchmark")
+    return query.where(
+        (ChallengeDetails.kind == "competition") | (ChallengeDetails.kind.is_(None))
+    )
+
+
+@app.get("/api/competitions")
+def competitions(
+    q: str = "",
+    status: Literal["all", "open", "closed"] = "all",
+    category: str = "",
+    sort: Literal["newest", "closing", "title"] = "newest",
+    db: DBSession = Depends(get_db),
+):
+    return challenge_listing(db, q, "competition", status, category, sort)
+
+
+@app.get("/api/competitions/filters")
+def competition_filters(db: DBSession = Depends(get_db)):
+    categories = db.scalars(
+        challenge_query("competition")
+        .with_only_columns(Competition.category)
+        .distinct()
+    )
+    return {"categories": sorted(category for category in categories if category)}
+
+
+def challenge_listing(db, q, kind, status="all", category="", sort="newest"):
+    query = challenge_query(kind)
+    if q.strip():
+        term = f"%{q.strip()[:100]}%"
         query = query.where(
-            (ChallengeDetails.kind == "competition") | (ChallengeDetails.kind.is_(None))
+            Competition.title.ilike(term) | Competition.description.ilike(term)
         )
-    if q:
-        query = query.where(Competition.title.ilike(f"%{q[:100]}%"))
-    return [
-        public(row, db)
-        for row in db.scalars(query.order_by(Competition.id.desc()).limit(100))
-    ]
+    if category:
+        query = query.where(Competition.category == category)
+    rows = list(db.scalars(query.order_by(Competition.id.desc())))
+    now = datetime.now(timezone.utc)
+
+    def deadline(row):
+        value = datetime.fromisoformat(row.deadline.replace("Z", "+00:00"))
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+    if status != "all":
+        rows = [row for row in rows if (deadline(row) > now) == (status == "open")]
+    if sort == "closing":
+        rows.sort(key=lambda row: (deadline(row) <= now, deadline(row), -row.id))
+    elif sort == "title":
+        rows.sort(key=lambda row: (row.title.casefold(), -row.id))
+    return [public(row, db) for row in rows[:100]]
 
 
 @app.get("/api/benchmarks")
@@ -397,6 +476,8 @@ async def create_challenge(
             competition_id=obj.id, owner_id=user.id, kind=kind, test_csv=test_text
         )
     )
+    db.flush()
+    initialize_competition(db, obj)
     db.commit()
     return public(obj, db)
 
@@ -444,8 +525,11 @@ def join(id: int, user: User = Depends(current_user), db: DBSession = Depends(ge
 
 @app.get("/api/benchmarks/{id}/sample")
 @app.get("/api/competitions/{id}/sample")
-def sample(id: int, db: DBSession = Depends(get_db)):
+def sample(
+    id: int, db: DBSession = Depends(get_db), user: User = Depends(current_user)
+):
     obj = require(db, Competition, id)
+    require_data_access(db, id, user)
     content = "id,prediction\n" + "".join(
         f"{key},0\n" for key in json.loads(obj.solution)
     )
@@ -458,8 +542,11 @@ def sample(id: int, db: DBSession = Depends(get_db)):
 
 @app.get("/api/benchmarks/{id}/test")
 @app.get("/api/competitions/{id}/test")
-def test_features(id: int, db: DBSession = Depends(get_db)):
+def test_features(
+    id: int, db: DBSession = Depends(get_db), user: User = Depends(current_user)
+):
     require(db, Competition, id)
+    require_data_access(db, id, user)
     details = db.get(ChallengeDetails, id)
     return Response(
         (
@@ -521,8 +608,21 @@ def my_submissions(
 
 
 @app.get("/api/notebooks")
-def notebooks(q: str = "", db: DBSession = Depends(get_db)):
-    return listing(db, Notebook, q)
+def notebooks(
+    q: str = "", user=Depends(optional_user), db: DBSession = Depends(get_db)
+):
+    return [
+        public(row, db)
+        for row in db.scalars(
+            select(Notebook)
+            .where(
+                visible_notebooks(user),
+                Notebook.title.icontains(q[:100], autoescape=True),
+            )
+            .order_by(Notebook.id.desc())
+            .limit(100)
+        )
+    ]
 
 
 @app.post("/api/notebooks", status_code=201)
@@ -551,14 +651,23 @@ def save_notebook(
         )
     for key, value in data.model_dump().items():
         setattr(obj, key, value)
+    working = db.get(NotebookWorkingCopy, id)
+    if not working:
+        working = NotebookWorkingCopy(notebook_id=id, private=0)
+        db.add(working)
+    working.document = json.dumps(notebook_document(obj))
     db.commit()
     return public(obj, db)
 
 
 @app.get("/api/notebooks/{id}/download")
-def download_notebook(id: int, db: DBSession = Depends(get_db)):
-    obj = require(db, Notebook, id)
-    notebook = notebook_document(obj)
+def download_notebook(
+    id: int, user=Depends(optional_user), db: DBSession = Depends(get_db)
+):
+    obj = require_visible(db, id, user)
+    notebook = notebook_document(
+        obj, db, working=bool(user and obj.owner_id == user.id)
+    )
     return Response(
         json.dumps(notebook),
         media_type="application/x-ipynb+json",
@@ -747,11 +856,53 @@ async def delete_work(
         db.refresh(row, with_for_update=True)
         task = None
         if kind == "datasets":
+            db.execute(delete(DatasetProfile).where(DatasetProfile.dataset_id == id))
+            db.execute(
+                update(CompetitionDataFile)
+                .where(CompetitionDataFile.source_dataset_id == id)
+                .values(source_dataset_id=None)
+            )
             task = WorkFileDeletion(
                 owner_id=user.id, kind="upload", path=row.storage_key
             )
             db.add(task)
         elif kind == "notebooks":
+            db.execute(
+                update(NotebookWorkingCopy)
+                .where(NotebookWorkingCopy.forked_from == id)
+                .values(forked_from=None)
+            )
+            if db.scalar(
+                select(NotebookCommit.id).where(
+                    NotebookCommit.notebook_id == id,
+                    NotebookCommit.status.in_(["queued", "running"]),
+                )
+            ):
+                raise HTTPException(
+                    409, "Wait for the notebook commit to finish before deleting"
+                )
+            db.execute(delete(NotebookCommit).where(NotebookCommit.notebook_id == id))
+            db.execute(
+                delete(NotebookWorkingCopy).where(NotebookWorkingCopy.notebook_id == id)
+            )
+            db.execute(
+                update(NotebookPublication)
+                .where(NotebookPublication.forked_from == id)
+                .values(forked_from=None)
+            )
+            db.execute(
+                delete(NotebookPublication).where(NotebookPublication.notebook_id == id)
+            )
+            db.execute(
+                delete(NotebookBookmark).where(NotebookBookmark.notebook_id == id)
+            )
+            remove_engagement(
+                db,
+                "notebook-comment",
+                select(NotebookComment.id).where(NotebookComment.notebook_id == id),
+            )
+            db.execute(delete(NotebookComment).where(NotebookComment.notebook_id == id))
+            db.execute(delete(NotebookShare).where(NotebookShare.notebook_id == id))
             # Expire linked editors before deleting the record, so Save cannot recreate it.
             for draft in db.scalars(
                 select(NotebookDraft)
@@ -767,9 +918,65 @@ async def delete_work(
             db.add(task)
         elif kind in ("competitions", "benchmarks"):
             db.execute(delete(Submission).where(Submission.competition_id == id))
+            db.execute(
+                delete(CompetitionTeamMember).where(
+                    CompetitionTeamMember.competition_id == id
+                )
+            )
+            db.execute(
+                delete(CompetitionTeam).where(CompetitionTeam.competition_id == id)
+            )
             db.execute(delete(Entry).where(Entry.competition_id == id))
             db.execute(
                 delete(ChallengeDetails).where(ChallengeDetails.competition_id == id)
+            )
+        if kind in ("competitions", "benchmarks"):
+            db.execute(
+                delete(CompetitionOverview).where(
+                    CompetitionOverview.competition_id == id
+                )
+            )
+            db.execute(
+                delete(CompetitionDataFile).where(
+                    CompetitionDataFile.competition_id == id
+                )
+            )
+            db.execute(
+                delete(CompetitionResource).where(
+                    CompetitionResource.competition_id == id
+                )
+            )
+            if db.scalar(
+                select(NotebookCommit.id).where(
+                    NotebookCommit.competition_id == id,
+                    NotebookCommit.status.in_(["queued", "running"]),
+                )
+            ):
+                raise HTTPException(
+                    409, "Wait for competition commits to finish before deleting"
+                )
+            db.execute(
+                delete(NotebookCommit).where(NotebookCommit.competition_id == id)
+            )
+            db.execute(
+                update(NotebookWorkingCopy)
+                .where(NotebookWorkingCopy.competition_id == id)
+                .values(competition_id=None)
+            )
+            remove_engagement(
+                db,
+                "competition-post",
+                select(CompetitionPost.id).where(CompetitionPost.competition_id == id),
+            )
+            db.execute(
+                delete(CompetitionPost).where(CompetitionPost.competition_id == id)
+            )
+        elif kind in ("notebooks", "models"):
+            db.execute(
+                delete(CompetitionResource).where(
+                    CompetitionResource.kind == kind,
+                    CompetitionResource.resource_id == id,
+                )
             )
         db.delete(row)
         db.commit()
@@ -779,3 +986,28 @@ async def delete_work(
             except OSError:
                 db.rollback()  # The durable cleanup job remains for retry.
     return Response(status_code=204)
+
+
+@app.get("/api/active-events")
+def active_events(user: User = Depends(current_user), db: DBSession = Depends(get_db)):
+    """Return only the signed-in user's queued and running evaluations."""
+    from .models import NotebookCommit
+
+    rows = db.execute(
+        select(NotebookCommit, Notebook.title)
+        .join(Notebook, Notebook.id == NotebookCommit.notebook_id)
+        .where(
+            NotebookCommit.owner_id == user.id,
+            NotebookCommit.status.in_(["queued", "running"]),
+        )
+        .order_by(NotebookCommit.id.desc())
+    ).all()
+    return [
+        {
+            "id": job.id,
+            "notebook_id": job.notebook_id,
+            "title": title,
+            "status": job.status,
+        }
+        for job, title in rows
+    ]

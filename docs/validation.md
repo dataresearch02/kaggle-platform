@@ -83,3 +83,126 @@ Validated with 59 API tests and five browser scenarios. New checks cover ownersh
 Added an owner-only Delete endpoint and a per-item confirmation in Your work. Deletion removes published records and challenge-dependent entries/submissions. Dataset files are removed immediately with durable retry jobs on failure; notebook file jobs wait for an available runtime, close the matching session and remove the owner's saved copy. Linked notebook drafts expire and cannot recreate a deleted notebook through Save. Other users' copied files are preserved.
 
 Validation: 62 API tests and five browser tests passed, including anonymous/cross-user rejection, all five work categories, challenge reference cleanup, actual CSV removal with neighboring files preserved, offline notebook cleanup retry, draft invalidation, confirmation cancellation and successful deletion from the personal list. TypeScript/Vite and API/web container builds, Prettier, Black and whitespace checks passed.
+
+## Competition overview filters — 2026-09-09
+
+Replaced Explore/Your work collection tabs with a standalone Your work button on Datasets, Models, Codes, Competitions and Benchmarks. Competition search matches titles and descriptions and combines with open/closed status, category, and newest/closing-soon/title sorting. Category choices come from competition records, excluding benchmarks. Status evaluates timezone-aware deadlines, and filters apply before the 100-result limit. Clear filters restores the defaults.
+
+Validation: 63 API tests and six browser tests passed, covering combined queries, description search, category options, sorting, closed deadlines with timezone offsets, invalid filter rejection, clear/reset controls, personal-work navigation and mobile overflow. Production builds and formatting checks passed. Screenshot: `apps/web/test-results/competition-filters.png`.
+
+Local rollout also required repairing stale Podman pod metadata and Arena-only DNS records that still referenced old gateways, restoring the Hub cookie file to mode 600, and stopping an orphaned Arena web monitor holding port 8080. Persistent project data directories were retained while the containers were recreated.
+The final port check also found a stale Arena-only DNAT rule forwarding localhost:8080 to the removed container. Removed that obsolete rule and its old subnet mark rule, retaining the new forwarding destination. The web gateway then returned successful health and competition-filter responses.
+
+## Full competition pages — 2026-09-09
+
+Competition cards from the overview, home and Your work now open dedicated pages with hash routes per section. Overview, Data, Code, Models, Discussion, Leaderboard and Rules support refresh and browser history. Join reflects authenticated membership and closing status. Data includes a public CSV preview/downloads; Leaderboard contains scoring and personal submissions. Published notebooks/model cards can be linked by their owners, and discussion posts persist per competition. Competition deletion cleans up its new links and posts; resource deletion removes its links.
+
+Validation: 64 API tests and seven browser tests passed. Coverage includes all sections, deep links, refresh/back navigation, joining/scoring, private-answer exclusion, membership authentication, owner-only resource linking, duplicate link prevention, scoped posts, deletion cleanup and mobile overflow. Production builds and formatting checks passed. Screenshots: `apps/web/test-results/competition-page-desktop.png` and `apps/web/test-results/competition-page-mobile.png`.
+
+## Optional Kaggle sample collection
+
+- API suite: **66 passed**, including import idempotency, preserving edits/deletions, rollback cleanup, public dataset downloads and scoring both generated baseline CSVs.
+- Live sample browser test: **1 passed**, executing all four imported notebooks against real Jupyter kernels, rendering both plots, downloading both CSVs and submitting them through the competition leaderboard UI. The resulting scores belong to the explicitly named `sample_test_*` account used by the test.
+- Local API/web container builds succeeded. The collection was imported into persistent local storage; a second import returned `already imported` with the same IDs.
+- Prettier checks passed. Vite still reports its existing large JavaScript bundle advisory.
+
+Run the optional live check after importing the collection with `npm run test:hub -- samples.spec.ts` from `apps/web`. It skips when the sample competitions are absent.
+
+## Competition metadata and joined data explorer
+
+- API suite: **70 passed**. Additional coverage checks organizer-only metadata writes, date validation, joined-only previews/downloads (including legacy routes), cross-competition file isolation, CSV validation, row pagination, column descriptions, persistent snapshots after source deletion and repeatable backfill.
+- Existing browser workflows: **7 passed**. The new organizer workflow passed separately after explicit textarea labels were added: edit/save/reload overview, upload a nested training CSV, edit its dictionary, inspect preview and verify mobile width.
+- Final targeted API checks: **6 passed** for metadata and sample import behavior. Frontend TypeScript/Vite build, Prettier and targeted Black checks passed.
+- Desktop and mobile data-explorer screenshots were generated under `apps/web/test-results/`.
+- Live PostgreSQL/container verification: both existing practice competitions were backfilled with train/test/submission snapshots (Iris: 120/30/30 rows; Penguins: 273/69/69 rows). Anonymous legacy/file downloads returned 401; the existing joined sample account could preview/download all files. Existing leaderboard scores remained available.
+
+## Paginated code library and read-only publications
+
+- API suite: **76 passed**. New coverage verifies bounded cursor pages, stable pagination during insertion, omission of source/documents from summaries, competition scoping, private bookmark filters, author-controlled sharing/revocation, public/private document separation, input-preserving forks and deletion cleanup.
+- Browser suite: **10 passed**. Checks include 20/40/42-row scroll loading, personal filters, shared recipients, desktop/mobile read-only viewing, sanitized saved outputs, no runtime requests while viewing, and all existing platform workflows.
+- Live notebook checks: **5 passed across two runs**. Publication/fork and sample-submission tests passed; the three existing editor/draft/kernel-control tests also passed through the updated navigation. Fork execution preserved inputs and publishing fork results did not change the source notebook.
+- Final API/web images were rebuilt and started locally. The deployed competition code list displayed all four filters. Existing data was retained; new publication/bookmark/share tables were added at startup.
+- TypeScript/Vite build, Prettier, targeted Black checks and `git diff --check` passed. Vite's existing large-bundle advisory remains.
+- Screenshots: `apps/web/test-results/code-view-desktop.png`, `code-view-mobile.png`, and `apps/web/hub-test-results/competition-code-list.png`.
+
+## New notebook from competition Code
+
+- Draft API tests: **6 passed**, including membership enforcement, automatic competition linking on save, repeated-save idempotency and unsaved-draft cleanup.
+- Live browser/kernel test: **1 passed** (`competition-create.spec.ts`): the button stays disabled before joining, opens the full-screen editor after joining, runs Python, saves into the competition's Your work filter, persists after refresh and discards an unsaved second notebook.
+- API/web images were rebuilt and started locally; TypeScript/Vite, targeted formatting and diff checks passed.
+- The local Podman API service at `/tmp/arena-podman.sock` was not running. It was restored and JupyterHub/web were recreated to bind the restored socket before the successful live test. Persistent data was retained.
+
+### Compact notebook platform navigation
+
+- The notebook rail shares Arena navigation labels and icons with the main sidebar, groups Data Hub destinations, and highlights Codes.
+- Frontend production build passed.
+- Live container browser test `integration/competition-create.spec.ts` passed, including mobile navigation to Datasets, closing the editor, successful deletion of the temporary draft, and preservation of the previously saved competition notebook.
+
+### Navigation toggle and Markdown snapshots
+
+- Added expand/collapse controls to the platform sidebar and notebook navigation. Expanded notebook navigation overlays the editor on small screens.
+- Notebook editing and public code viewing share GFM and KaTeX rendering; Markdown editing includes syntax highlighting, insertion controls, Shift+Enter preview, and double-click/Enter to edit.
+- Explicit draft Save now stores the full public notebook snapshot through the existing publication validation, retaining Markdown and outputs.
+- Validation: frontend and container builds passed; 12 API draft/publication tests passed; the live competition creation browser test passed with navigation toggling, Markdown heading/table/math preview, saved read-only rendering, and draft cleanup.
+- Existing notebooks whose public representation contains only Python require the owner to open the preserved working copy and select Publish code and outputs to refresh that snapshot.
+
+### Published code viewer tabs
+
+Frontend build passed. Seven code API tests passed, including comment persistence,
+authentication, blank-body rejection and ownership checks. Two browser tests passed,
+covering Input/Output/Logs tab contents, comment posting, persistence after reload,
+deletion, and returning to the Notebook outline.
+
+### Replies and reactions
+
+Eleven API tests passed, including all four conversation target types, persistent
+replies, idempotent reactions, reaction removal, authentication, reply ownership,
+and invalid targets/reactions. Three browser tests passed, including notebook
+comment and competition discussion replies/reactions surviving reload and removal.
+Frontend and local API/web container builds passed.
+
+### Sample notebook narratives
+
+Updated all four existing curator notebook snapshots with Markdown headings,
+descriptions, notes, tables, source credits, and runnable code cells. Three sample
+API tests passed, including exact preservation of executable code and idempotent
+upgrades. The live sample workflow test passed across all four notebooks: public
+headings/tables, forks, plots, downloadable CSVs, and real competition scoring.
+
+### Evaluated competition notebook commits
+
+Forks and competition draft saves now stay private. The API suite verifies private
+visibility, immutable commit snapshots, scoring before publication, idempotent
+completion, and ownership/membership controls. Live browser tests verify a missing
+CSV fails without publication, a fresh-kernel run receives test data and publishes
+only after scoring, and subsequent saves preserve the published snapshot.
+
+Final validation: **88 API tests** and **11 frontend browser tests** passed. Live
+new-notebook commits passed after correcting the post-commit list refresh. The
+runner now waits for shell and IOPub readiness before execution; a regression test
+covers a dropped initial readiness message without executing code twice.
+
+### Competition teams, submissions and navigation
+
+90 API tests and 11 browser tests passed. New coverage checks membership gating,
+invite isolation, duplicate membership, captain transfer, closed competitions,
+team cleanup, team persistence after browser reload, the More group, Your work
+ordering, and scoring from the Submissions tab. Production frontend and local
+API/web container builds passed; the updated containers were recreated.
+
+### Compact sidebar and active events
+
+Twelve browser tests passed, including collapsed brand/group visibility, group
+expansion, the Active Events empty state and Escape dismissal. The new API test
+passed for owner isolation and queued/running filtering. Frontend build passed.
+
+### Main workflow audit
+
+See [the workflow review](logic-review.md) for findings and limits. Fixed competition
+draft publication bypass and legacy private-edit exposure, added a mobile panel
+close control, shared kernel readiness handling, and bounded scientific thread
+pools. The API suite passed 92 tests; the final probe adjustment passed 10 targeted
+tests. Twelve browser tests passed. All seven live workflows passed across the
+final runs, with the four-notebook sample workflow passing after the thread-pool
+fix. Checked record counts survived API/web recreation. This is local functional
+validation, not a production readiness or disaster-recovery certification.

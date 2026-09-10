@@ -1,16 +1,19 @@
-import { useEffect, useRef, useState } from 'react';
+import CommitNotebook from './CommitNotebook';
+import { notebookHeadings } from './notebookHeadings';
+import PlatformRail from './PlatformRail';
+import type { Page } from './navigation';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { python } from '@codemirror/lang-python';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import Markdown from './Markdown';
+import { markdown } from '@codemirror/lang-markdown';
 import DOMPurify from 'dompurify';
 import {
   ArrowDown,
   ArrowUp,
   Code2,
-  Menu,
   ChevronDown,
   ChevronsRight,
   Scissors,
@@ -19,8 +22,6 @@ import {
   PanelRight,
   Terminal,
   Keyboard,
-  List,
-  HelpCircle,
   X,
   FileText,
   Play,
@@ -43,7 +44,7 @@ const notebookHighlight = syntaxHighlighting(
   ]),
 );
 
-type Output = {
+export type Output = {
   output_type: string;
   text?: string | string[];
   data?: Record<string, string | string[]>;
@@ -54,7 +55,7 @@ type Output = {
   metadata?: object;
   transient?: { display_id?: string };
 };
-type Cell = {
+export type Cell = {
   id: string;
   cell_type: 'code' | 'markdown' | 'raw';
   source: string | string[];
@@ -62,13 +63,18 @@ type Cell = {
   outputs?: Output[];
   execution_count?: number | null;
 };
-type Document = {
+export type Document = {
   nbformat: 4;
   nbformat_minor: number;
   metadata: Record<string, unknown>;
   cells: Cell[];
 };
-const text = (value?: string | string[]) => (Array.isArray(value) ? value.join('') : value || '');
+export const text = (value?: string | string[]) =>
+  Array.isArray(value)
+    ? value.filter((line) => typeof line === 'string').join('')
+    : typeof value === 'string'
+      ? value
+      : '';
 const newCell = (type: Cell['cell_type'] = 'code'): Cell => ({
   id: crypto.randomUUID(),
   cell_type: type,
@@ -83,14 +89,23 @@ const blank = (code: string): Document => ({
   cells: [{ ...newCell(), source: code }],
 });
 
-function CellOutput({ output }: { output: Output }) {
+export function CellOutput({ output }: { output: Output }) {
+  if (output.data?.['text/csv']) {
+    const csv = text(output.data['text/csv']);
+    return (
+      <a href={`data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`} download="submission.csv">
+        Download CSV
+      </a>
+    );
+  }
   if (output.output_type === 'error')
     return (
       <pre className="cell-error">
-        {(output.traceback?.join('\n') || `${output.ename}: ${output.evalue}`).replace(
-          /\u001b\[[0-9;]*m/g,
-          '',
-        )}
+        {(
+          (Array.isArray(output.traceback)
+            ? output.traceback.filter((line) => typeof line === 'string').join('\n')
+            : '') || `${text(output.ename)}: ${text(output.evalue)}`
+        ).replace(/\u001b\[[0-9;]*m/g, '')}
       </pre>
     );
   if (output.output_type === 'stream') return <pre>{text(output.text)}</pre>;
@@ -123,8 +138,7 @@ function CellOutput({ output }: { output: Output }) {
         }}
       />
     );
-  if (data['text/markdown'])
-    return <ReactMarkdown remarkPlugins={[remarkGfm]}>{text(data['text/markdown'])}</ReactMarkdown>;
+  if (data['text/markdown']) return <Markdown>{text(data['text/markdown'])}</Markdown>;
   return <pre>{text(data['text/plain'])}</pre>;
 }
 
@@ -140,7 +154,10 @@ export default function NotebookWorkspace({
   title = 'Untitled notebook',
   onTitleChange,
   onClose,
+  onNavigate,
   permanent = false,
+  canPublish = false,
+  competitionId,
 }: {
   notebookId: number;
   signedIn: boolean;
@@ -153,7 +170,10 @@ export default function NotebookWorkspace({
   title?: string;
   onTitleChange?: (value: string) => void;
   onClose?: () => void;
+  onNavigate?: (page: Page) => void;
   permanent?: boolean;
+  canPublish?: boolean;
+  competitionId?: number;
 }) {
   const [document, setDocument] = useState<Document>(() => blank(initialCode));
   const doc = useRef(document);
@@ -164,9 +184,11 @@ export default function NotebookWorkspace({
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState('');
   const [savedAt, setSavedAt] = useState('');
+  const [published, setPublished] = useState(false);
   const [active, setActive] = useState('');
   const [preview, setPreview] = useState<Record<string, boolean>>({});
   const [dark, setDark] = useState(false);
+  const [navigationExpanded, setNavigationExpanded] = useState(false);
   const [panel, setPanel] = useState(() => window.innerWidth > 760);
   const [consoleOpen, setConsoleOpen] = useState(true);
   const [consoleCommand, setConsoleCommand] = useState('');
@@ -277,7 +299,7 @@ export default function NotebookWorkspace({
   }, []);
 
   async function save() {
-    if (state !== 'ready' || runInProgress.current || saveInProgress.current) return;
+    if (state !== 'ready' || runInProgress.current || saveInProgress.current) return false;
     saveInProgress.current = true;
     setSaving(true);
     onSavingChange?.(true);
@@ -290,8 +312,10 @@ export default function NotebookWorkspace({
         setDirty(doc.current !== snapshot);
         setSavedAt(new Date().toLocaleTimeString());
       }
+      return true;
     } catch (e) {
       if (alive.current) setError((e as Error).message);
+      return false;
     } finally {
       saveInProgress.current = false;
       if (alive.current) setSaving(false);
@@ -442,12 +466,20 @@ export default function NotebookWorkspace({
     title: string;
     filename?: string;
   }[];
-  const headings = document.cells
-    .filter((cell) => cell.cell_type === 'markdown')
-    .flatMap((cell) => {
-      const heading = text(cell.source).match(/^#{1,6}\s+(.+)$/m);
-      return heading ? [{ id: cell.id, title: heading[1] }] : [];
-    });
+  const headings = useMemo(
+    () =>
+      document.cells
+        .filter((cell) => cell.cell_type === 'markdown')
+        .flatMap((cell) =>
+          notebookHeadings(text(cell.source)).map((heading, index) => ({
+            ...heading,
+            id: `${cell.id}-heading-${index}`,
+            cellId: cell.id,
+            index,
+          })),
+        ),
+    [document.cells],
+  );
   function copyCell(cut = false) {
     if (!selected || busy) return;
     clipboard.current = structuredClone(selected);
@@ -551,63 +583,23 @@ export default function NotebookWorkspace({
   };
   return (
     <section
-      className={`arena-notebook ${dark ? 'arena-notebook-dark' : ''}`}
+      className={`arena-notebook ${dark ? 'arena-notebook-dark' : ''} ${navigationExpanded ? 'navigation-expanded' : ''}`}
       aria-label="Arena notebook editor"
     >
-      <nav className="notebook-rail" aria-label="Notebook workspace navigation">
-        <button
-          aria-label="Toggle notebook panel"
-          title="Toggle notebook panel"
-          onClick={() => setPanel(!panel)}
-        >
-          <Menu size={22} />
-        </button>
-        <button
-          className="notebook-rail-create"
-          aria-label="Insert code cell"
-          title="Insert code cell"
-          disabled={busy}
-          onClick={() => insert('code')}
-        >
-          <Plus size={34} />
-        </button>
-        <button
-          aria-label="Show notebook inputs"
-          title="Notebook inputs"
-          onClick={() => setPanel(true)}
-        >
-          <FileText size={21} />
-        </button>
-        <button
-          aria-label="Focus selected cell"
-          title="Editor"
-          onClick={() =>
-            window.document
-              .getElementById(`cell-${selected?.id}`)
-              ?.scrollIntoView({ block: 'center' })
+      <PlatformRail
+        expanded={navigationExpanded}
+        toggle={() => setNavigationExpanded(!navigationExpanded)}
+        signedIn={signedIn}
+        permanent={permanent || notebookId > 0}
+        disabled={saving}
+        navigate={(page) => {
+          if (onNavigate) onNavigate(page);
+          else {
+            onClose?.();
+            window.location.hash = page;
           }
-        >
-          <Code2 size={21} />
-        </button>
-        <button
-          aria-label="Show table of contents"
-          title="Table of contents"
-          onClick={() => setPanel(true)}
-        >
-          <List size={21} />
-        </button>
-        <button aria-label="Notebook help" title="Help" onClick={() => setHelp(true)}>
-          <HelpCircle size={21} />
-        </button>
-        <button
-          className="notebook-rail-bottom"
-          aria-label="Toggle console"
-          title="Console"
-          onClick={() => setConsoleOpen(!consoleOpen)}
-        >
-          <Terminal size={21} />
-        </button>
-      </nav>
+        }}
+      />
       <header className="notebook-topbar new-notebook-header">
         <div className="notebook-title-row">
           {onTitleChange ? (
@@ -643,6 +635,42 @@ export default function NotebookWorkspace({
             {saving ? 'Saving…' : 'Save notebook'}
             <span>{permanent || savedAt ? '✓' : '0'}</span>
           </button>
+          {competitionId && notebookId > 0 && (
+            <CommitNotebook
+              notebookId={notebookId}
+              competitionId={competitionId}
+              save={save}
+              close={onClose}
+              disabled={busy}
+            />
+          )}
+          {competitionId && !notebookId && (
+            <span className="muted">Save to enable competition commit</span>
+          )}
+          {canPublish && !draftId && !competitionId && (
+            <button
+              className="button secondary"
+              disabled={busy || state !== 'ready'}
+              onClick={async () => {
+                setSaving(true);
+                setError('');
+                try {
+                  await api(`/code/${notebookId}/publication`, {
+                    method: 'PUT',
+                    body: JSON.stringify(doc.current),
+                  });
+                  setPublished(true);
+                } catch (e) {
+                  setError((e as Error).message);
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            >
+              Publish code and outputs
+            </button>
+          )}
+          {published && <a href={`#code/${notebookId}`}>View published code</a>}
           {onClose && (
             <button
               className="notebook-close"
@@ -780,7 +808,7 @@ export default function NotebookWorkspace({
               <RotateCcw size={19} />
             </button>
             <button
-              aria-label="Show or hide notebook panel"
+              aria-label="Toggle notebook panel"
               title="Notebook panel"
               onClick={() => setPanel(!panel)}
             >
@@ -864,16 +892,51 @@ export default function NotebookWorkspace({
                     </button>
                   </div>
                 </div>
-                {cell.cell_type !== 'code' && preview[cell.id] ? (
+                {cell.cell_type === 'markdown' && !preview[cell.id] && (
+                  <div
+                    className="markdown-formatting"
+                    role="toolbar"
+                    aria-label={`Format Markdown cell ${index + 1}`}
+                  >
+                    {[
+                      ['Heading', '## Heading'],
+                      ['Bold', '**bold text**'],
+                      ['Italic', '*italic text*'],
+                      ['Link', '[link text](https://example.com)'],
+                      ['List', '- List item'],
+                      ['Math', '$x^2$'],
+                    ].map(([label, snippet]) => (
+                      <button
+                        key={label}
+                        disabled={saving || !!running || state !== 'ready'}
+                        onClick={() =>
+                          changeCell(cell.id, {
+                            source: `${text(cell.source)}${text(cell.source) ? '\n' : ''}${snippet}`,
+                          })
+                        }
+                      >
+                        {label}
+                      </button>
+                    ))}
+                    <span>Shift + Enter to preview · double-click preview to edit</span>
+                  </div>
+                )}
+                {cell.cell_type === 'markdown' && preview[cell.id] ? (
                   <div
                     className="arena-markdown"
+                    tabIndex={0}
+                    aria-label={`Markdown preview cell ${index + 1}`}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && !event.shiftKey) {
+                        event.preventDefault();
+                        setPreview((previous) => ({ ...previous, [cell.id]: false }));
+                      }
+                    }}
                     onDoubleClick={() =>
                       setPreview((previous) => ({ ...previous, [cell.id]: false }))
                     }
                   >
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {text(cell.source) || '*Empty Markdown cell*'}
-                    </ReactMarkdown>
+                    <Markdown>{text(cell.source) || '*Empty Markdown cell*'}</Markdown>
                   </div>
                 ) : (
                   <CodeMirror
@@ -882,7 +945,9 @@ export default function NotebookWorkspace({
                     extensions={
                       cell.cell_type === 'code'
                         ? [python(), ...(dark ? [] : [notebookHighlight])]
-                        : []
+                        : cell.cell_type === 'markdown'
+                          ? [markdown()]
+                          : []
                     }
                     theme={dark ? 'dark' : 'light'}
                     editable={state === 'ready' && !saving && !running}
@@ -1003,14 +1068,28 @@ export default function NotebookWorkspace({
         </div>
         {panel && (
           <NotebookPanel
+            close={() => setPanel(false)}
             inputs={inputs}
             attach={attach}
             headings={headings}
             jump={(id) => {
-              setActive(id);
-              window.document
-                .getElementById(`cell-${id}`)
-                ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+              const heading = headings.find((item) => item.id === id);
+              if (!heading) return;
+              if (window.innerWidth <= 760) setPanel(false);
+              setActive(heading.cellId);
+              setPreview((previous) => ({ ...previous, [heading.cellId]: true }));
+              requestAnimationFrame(() => {
+                const target = window.document
+                  .getElementById(`cell-${heading.cellId}`)
+                  ?.querySelectorAll<HTMLElement>(
+                    '.arena-markdown h1, .arena-markdown h2, .arena-markdown h3, .arena-markdown h4, .arena-markdown h5, .arena-markdown h6',
+                  )[heading.index];
+                if (target) {
+                  target.tabIndex = -1;
+                  target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+                  target.focus({ preventScroll: true });
+                }
+              });
             }}
             ready={!busy}
             notebookId={notebookId}

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+test.use({ actionTimeout: 30_000 });
 const headers = { 'X-Arena-Client': 'web' };
 test.afterEach(async ({ page }) => {
   await page.request.delete('/api/notebook-session', { headers }).catch(() => {});
@@ -23,8 +24,7 @@ test('Arena editor runs Python and renders safe outputs without a Jupyter UI', a
   });
   const notebook = await created.json();
   await page.getByRole('navigation').getByRole('button', { name: 'Codes', exact: true }).click();
-  await page.getByRole('button', { name: new RegExp(notebook.title) }).click();
-  await page.getByRole('button', { name: 'Start session', exact: true }).click();
+  await page.getByRole('link', { name: new RegExp(notebook.title) }).click();
   await expect(page.getByRole('button', { name: 'Run all', exact: true })).toBeEnabled({
     timeout: 240000,
   });
@@ -54,10 +54,9 @@ test('Arena editor runs Python and renders safe outputs without a Jupyter UI', a
   expect(saved.cells[1].cell_type).toBe('markdown');
   expect(JSON.stringify(saved.cells[0].outputs)).toContain('ARENA_NATIVE_OK');
   await page.screenshot({ path: 'hub-test-results/native-notebook.png' });
-  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await page.getByRole('button', { name: 'Close notebook editor', exact: true }).click();
   await page.request.delete('/api/notebook-session', { headers });
-  await page.getByRole('button', { name: new RegExp(notebook.title) }).click();
-  await page.getByRole('button', { name: 'Start session', exact: true }).click();
+  await page.goto(`/#code/${notebook.id}/edit`);
   await expect(page.getByLabel('Output cell 1')).toContainText('ARENA_NATIVE_OK', {
     timeout: 240000,
   });
@@ -206,7 +205,7 @@ test('reference notebook layout has working menus, shared console and dataset in
   await page.getByRole('button', { name: 'Run cell', exact: true }).click();
   await expect(page.locator('.arena-cell-outputs').last()).toContainText('43');
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole('button', { name: 'Toggle notebook panel', exact: true }).click();
+  await page.getByRole('button', { name: 'Close notebook panel', exact: true }).click();
   await expect(page.getByLabel('Notebook panel', { exact: true })).toHaveCount(0);
   expect(
     await page.locator('.new-notebook-dialog').evaluate((el) => el.scrollWidth <= el.clientWidth),

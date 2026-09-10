@@ -91,6 +91,15 @@ def test_kernel_messages_are_scoped_and_streamed(member, hub, monkeypatch):
 
         async def send(self, raw):
             request = json.loads(raw)
+            if request["content"].get("code") == "":
+                self.id = request["header"]["msg_id"]
+                self.messages = [
+                    ("execute_reply", {}),
+                    ("status", {"execution_state": "idle"}),
+                ]
+                self.ready = True
+                return
+            assert self.ready
             assert request["content"]["code"] == "print(42)"
             assert request["content"]["allow_stdin"] is False
             self.id = request["header"]["msg_id"]

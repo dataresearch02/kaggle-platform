@@ -16,9 +16,10 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 from websockets.asyncio.client import connect
 
+from .kernel_channels import wait_for_kernel
 from .auth import current_user
 from .db import DATA_DIR, get_db
-from .models import Dataset, Notebook, User
+from .models import Dataset, Notebook, User, NotebookWorkingCopy
 from .notebook_drafts import owned, path_for, open_draft, user_lock
 from .notebook_runtime import HubClient, get_hub, hub_username, open_notebook
 
@@ -79,6 +80,10 @@ def resolve(kind, id, user, db):
         path = path_for(owned(db, id, user))
         db.commit()  # Do not hold a database row lock throughout kernel execution.
         return path
+    from .notebook_visibility import require_visible
+
+    if id.isdecimal():
+        require_visible(db, int(id), user)
     if not id.isdecimal() or not db.get(Notebook, int(id)):
         raise HTTPException(404, "Notebook not found")
     return f"arena-notebook-{int(id)}.ipynb"
@@ -131,6 +136,14 @@ async def put_document(
             ),
             (200, 201),
         )
+    if kind == "notebooks":
+        working = db.get(NotebookWorkingCopy, int(id))
+        if db.get(Notebook, int(id)).owner_id == user.id:
+            if not working:
+                working = NotebookWorkingCopy(notebook_id=int(id), private=0)
+                db.add(working)
+            working.document = json.dumps(data.model_dump())
+            db.commit()
     return {"saved": True}
 
 
@@ -259,6 +272,7 @@ async def execute(
                 max_size=12 * 1024 * 1024,
                 open_timeout=30,
             ) as socket:
+                await wait_for_kernel(socket, hub_username(user))
                 msg_id = secrets.token_hex(16)
                 await socket.send(
                     json.dumps(

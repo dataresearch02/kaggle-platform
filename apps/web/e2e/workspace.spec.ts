@@ -43,15 +43,15 @@ test('a learner can publish data, save a notebook, complete a lesson and submit 
     data: { title: 'Browser experiment', description: 'A saved experiment.', code: 'print(42)' },
   });
   await page.reload();
-  await page
-    .getByRole('button', { name: /Browser experiment/ })
-    .first()
-    .click();
-  await page.getByText('Community template source', { exact: true }).click();
-  await page.getByLabel('Python source').fill('print(43)');
-  await page.getByRole('button', { name: 'Save notebook template', exact: true }).click();
-  await expect(page.locator('.toast')).toContainText('Notebook saved');
-  await page.getByRole('button', { name: 'Close dialog' }).click();
+  const ownedCode = page.getByRole('link', { name: /Browser experiment/ }).first();
+  await expect(ownedCode).toHaveAttribute('href', /\/edit$/);
+  // Full-screen owner editing is covered by the live runtime integration test.
+  const publishedUrl = (await ownedCode.getAttribute('href'))!.replace('/edit', '');
+  await page.goto(`/${publishedUrl}`);
+  await expect(page.locator('.code-published-cells')).toContainText('print(42)');
+  await expect(page.getByRole('button', { name: 'Run all', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Fork code', exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 
   await page.getByRole('navigation').getByRole('button', { name: 'Learn', exact: true }).click();
   await page.getByRole('button', { name: /Python foundations/ }).click();
@@ -65,7 +65,28 @@ test('a learner can publish data, save a notebook, complete a lesson and submit 
     .click();
   await page.getByRole('button', { name: /Predict bike demand/ }).click();
   await page.getByRole('button', { name: 'Join competition', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('You joined');
+  await expect(page.locator('.competition-page').getByRole('status')).toContainText('You joined');
+  const navigation = page.getByRole('navigation', { name: 'Main navigation' });
+  await expect(navigation.getByRole('button').last()).toHaveAccessibleName('Your work');
+  await navigation.getByRole('button', { name: 'More', exact: true }).click();
+  await expect(navigation.getByRole('button', { name: 'Learn', exact: true })).toBeHidden();
+  await navigation.getByRole('button', { name: 'More', exact: true }).click();
+  await expect(navigation.getByRole('group', { name: 'More' }).getByRole('button')).toHaveCount(2);
+  await expect(navigation.getByRole('button', { name: 'Competitions', exact: true })).toHaveCSS(
+    'border-right-width',
+    '3px',
+  );
+  await page.getByRole('link', { name: 'Team', exact: true }).click();
+  await page.getByLabel('Team name', { exact: true }).fill('Browser team');
+  await page.getByRole('button', { name: 'Create team', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Browser team' })).toBeVisible();
+  await expect(page.getByLabel('Team invite code')).not.toHaveValue('');
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Browser team' })).toBeVisible();
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: 'Leave team', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Create team', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'Submissions', exact: true }).click();
   await page.getByLabel('Submit predictions').setInputFiles({
     name: 'submission.csv',
     mimeType: 'text/csv',
@@ -73,7 +94,7 @@ test('a learner can publish data, save a notebook, complete a lesson and submit 
   });
   await page.getByRole('button', { name: 'Score submission' }).click();
   await expect(page.getByRole('heading', { name: 'Your submissions' })).toBeVisible();
-  await expect(page.getByRole('dialog')).toContainText('0.0000');
+  await expect(page.locator('.competition-page')).toContainText('0.0000');
   expect(errors).toEqual([]);
 });
 
@@ -123,16 +144,23 @@ test('creators can publish competitions and benchmarks and score predictions', a
     await form.getByRole('button', { name: 'Publish', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     await page.getByRole('button', { name: new RegExp(title) }).click();
-    await dialog.getByRole('button', { name: `Join ${kind.toLowerCase()}`, exact: true }).click();
-    await dialog.getByLabel('Submit predictions').setInputFiles({
+    const detail = kind === 'Competition' ? page.locator('.competition-page') : dialog;
+    await detail.getByRole('button', { name: `Join ${kind.toLowerCase()}`, exact: true }).click();
+    if (kind === 'Competition')
+      await detail.getByRole('link', { name: 'Submissions', exact: true }).click();
+    await detail.getByLabel('Submit predictions').setInputFiles({
       name: 'predictions.csv',
       mimeType: 'text/csv',
       buffer: Buffer.from('id,prediction\na,10\nb,20\n'),
     });
-    await dialog.getByRole('button', { name: 'Score submission' }).click();
-    await expect(dialog.getByRole('cell', { name: '#1', exact: true })).toBeVisible();
-    await expect(dialog.getByRole('cell', { name: '0.0000', exact: true }).first()).toBeVisible();
-    await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+    await detail.getByRole('button', { name: 'Score submission' }).click();
+    if (kind === 'Competition')
+      await detail.getByRole('link', { name: 'Leaderboard', exact: true }).click();
+    await expect(detail.getByRole('cell', { name: '#1', exact: true })).toBeVisible();
+    await expect(detail.getByRole('cell', { name: '0.0000', exact: true }).first()).toBeVisible();
+    if (kind === 'Competition')
+      await detail.getByRole('button', { name: 'All competitions', exact: true }).click();
+    else await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
   }
 });
 
@@ -246,4 +274,184 @@ test('Your work appears after creation and manages only the current users conten
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   await expect(page.locator('.work-row')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Your work starts here' })).toBeVisible();
+});
+
+test('competition overview uses a Your work button and combines search and filters', async ({
+  page,
+}) => {
+  await page.goto('/#competitions');
+  await expect(page.locator('.collection-tabs')).toHaveCount(0);
+  await expect(
+    page.locator('.collection-actions').getByRole('button', { name: 'Your work' }),
+  ).toBeVisible();
+  await page.getByLabel('Search competitions', { exact: true }).fill('bike');
+  await page.getByLabel('Competition status', { exact: true }).selectOption('open');
+  await page.getByLabel('Competition category', { exact: true }).selectOption('Getting Started');
+  await page.getByLabel('Sort competitions', { exact: true }).selectOption('closing');
+  await expect(page.getByRole('button', { name: /Predict bike demand/ })).toBeVisible();
+  await page.getByLabel('Competition status', { exact: true }).selectOption('closed');
+  await expect(page.getByRole('heading', { name: 'No results yet' })).toBeVisible();
+  await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+  await expect(page.getByLabel('Search competitions', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('Competition status', { exact: true })).toHaveValue('all');
+  await expect(page.getByRole('button', { name: /Predict bike demand/ })).toBeVisible();
+  await page.screenshot({ path: 'test-results/competition-filters.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.locator('.collection-actions').getByRole('button', { name: 'Your work' }).click();
+  await expect(page.getByRole('heading', { name: 'Your work', exact: true })).toBeVisible();
+});
+
+test('competition pages support deep links, all sections and scoped community work', async ({
+  page,
+}) => {
+  await page.goto('/#competitions');
+  await page.getByRole('button', { name: /Predict bike demand/ }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page).toHaveURL(/#competitions\/1\/overview$/);
+  const sections = page.getByRole('navigation', { name: 'Competition sections' });
+  await expect(sections.getByRole('link')).toHaveCount(9);
+  await sections.getByRole('link', { name: 'Data', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Join to explore the data' })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'temperature', exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(sections.getByRole('link', { name: 'Data', exact: true })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+  await sections.getByRole('link', { name: 'Rules', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Submission rules' })).toBeVisible();
+  await sections.getByRole('link', { name: 'Models', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'No models shared yet' })).toBeVisible();
+  await page.getByRole('button', { name: 'Join the community' }).click();
+  await page.getByLabel('Username', { exact: true }).fill(`comp_page_${Date.now()}`);
+  await page.getByLabel(/^Password/).fill('competition-page-password');
+  await page.getByRole('button', { name: 'Create account', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Join competition', exact: true }).click();
+  await sections.getByRole('link', { name: 'Data', exact: true }).click();
+  await page.getByRole('button', { name: 'test.csv', exact: true }).click();
+  await expect(page.getByRole('columnheader', { name: 'temperature', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Download file' })).toBeVisible();
+  const codeTitle = `My competition code ${Date.now()}`;
+  const postTitle = `Baseline question ${Date.now()}`;
+  const headers = { 'X-Arena-Client': 'web' };
+  const code = await (
+    await page.request.post('/api/notebooks', {
+      headers,
+      data: { title: codeTitle, code: 'print(42)' },
+    })
+  ).json();
+  await sections.getByRole('link', { name: 'Code', exact: true }).click();
+  await page.getByRole('button', { name: 'Use existing code', exact: true }).click();
+  await page.getByLabel('Your saved code').selectOption(String(code.id));
+  await expect(page.getByRole('button', { name: 'Open to commit', exact: true })).toBeEnabled();
+  // Runtime-backed commit publication is covered by competition-commit.spec.ts.
+  expect(
+    (
+      await (await page.request.get(`/api/code?competition_id=1&filter=your-work`)).json()
+    ).items.some((row: { id: number }) => row.id === code.id),
+  ).toBe(false);
+  await sections.getByRole('link', { name: 'Discussion', exact: true }).click();
+  await page.getByLabel('Discussion title').fill(postTitle);
+  await page.getByLabel('Message', { exact: true }).fill('I will begin with a simple baseline.');
+  await page.getByRole('button', { name: 'Post discussion' }).click();
+  await expect(page.getByRole('heading', { name: postTitle, exact: true })).toBeVisible();
+  await sections.getByRole('link', { name: 'Overview', exact: true }).click();
+  await page.screenshot({ path: 'test-results/competition-page-desktop.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/competition-page-mobile.png', fullPage: true });
+  await page.getByRole('button', { name: 'All competitions', exact: true }).click();
+  await expect(page).toHaveURL(/#competitions$/);
+  await page.goBack();
+  await expect(
+    page.getByRole('heading', { name: 'Predict bike demand', exact: true }),
+  ).toBeVisible();
+});
+
+test('organizer edits overview and publishes documented competition files', async ({ page }) => {
+  await page.goto('/');
+  const headers = { 'X-Arena-Client': 'web' };
+  const registration = await page.request.post('/api/auth/register', {
+    headers,
+    data: { username: `metadata_${Date.now()}`, password: 'metadata-test-password' },
+  });
+  expect(registration.status()).toBe(201);
+  const created = await page.request.post('/api/competitions', {
+    headers,
+    multipart: {
+      title: 'Documented competition',
+      description: 'Predict measured demand',
+      deadline: '2028-12-31T23:59:59Z',
+      test_file: {
+        name: 'test.csv',
+        mimeType: 'text/csv',
+        buffer: Buffer.from('id,x\na,2\nb,3\n'),
+      },
+      solution_file: {
+        name: 'solution.csv',
+        mimeType: 'text/csv',
+        buffer: Buffer.from('id,prediction\na,4\nb,6\n'),
+      },
+    },
+  });
+  expect(created.status()).toBe(201);
+  const item = await created.json();
+  await page.goto(`/#competitions/${item.id}/overview`);
+  await page.reload();
+  await page.getByRole('button', { name: 'Edit overview', exact: true }).click();
+  await page.getByLabel('Prize summary', { exact: true }).fill('Research credits');
+  await page.getByLabel('Prize details', { exact: true }).fill('Credits for the top three teams');
+  await page
+    .getByLabel('How to participate', { exact: true })
+    .fill('Train on historical demand and validate before submitting.');
+  await page.getByRole('button', { name: 'Save overview', exact: true }).click();
+  await expect(page.getByText('Credits for the top three teams')).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByText('Train on historical demand and validate before submitting.'),
+  ).toBeVisible();
+  await page.getByRole('link', { name: 'Data', exact: true }).click();
+  await page.getByText('Add competition data', { exact: true }).click();
+  await page.getByLabel('CSV file', { exact: true }).setInputFiles({
+    name: 'train.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('id,x,target\n1,4,8\n2,5,10\n'),
+  });
+  await page.getByLabel('File path', { exact: true }).fill('train/features.csv');
+  await page.getByLabel('Description', { exact: true }).fill('Historical features and labels');
+  await page.getByLabel('License', { exact: true }).fill('CC0-1.0');
+  await page.getByRole('button', { name: 'Add file', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'features.csv', exact: true })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'target', exact: true })).toBeVisible();
+  await page.getByText('Edit file documentation', { exact: true }).click();
+  await page.getByLabel('target', { exact: true }).fill('Demand to predict');
+  await page.getByRole('button', { name: 'Save documentation', exact: true }).click();
+  await expect(page.getByRole('cell', { name: 'Demand to predict', exact: true })).toBeVisible();
+  await page.screenshot({ path: 'test-results/competition-data-desktop.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/competition-data-mobile.png', fullPage: true });
+});
+
+test('compact navigation keeps groups closed and opens active events', async ({ page }) => {
+  await page.goto('/');
+  const sidebar = page.locator('.sidebar');
+  const header = sidebar.locator('.sidebar-header');
+  await expect(header.getByRole('button', { name: 'Arena home' })).toBeVisible();
+  await sidebar.getByRole('button', { name: 'Collapse navigation' }).click();
+  await expect(sidebar.getByRole('button', { name: 'Arena home' })).toBeHidden();
+  await expect(sidebar.getByRole('group', { name: 'Data Hub' })).toBeHidden();
+  await sidebar.getByRole('button', { name: 'Data Hub', exact: true }).click();
+  await expect(sidebar.getByRole('button', { name: 'Datasets', exact: true })).toBeVisible();
+  await sidebar.getByRole('button', { name: 'View Active Events' }).click();
+  const dialog = page.getByRole('dialog', { name: 'No Active Events' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText('0 Active Events', { exact: true })).toBeVisible();
+  await page.screenshot({ path: 'test-results/active-events.png' });
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await sidebar.getByRole('button', { name: 'Expand navigation' }).click();
+  await expect(header.getByRole('button', { name: 'Arena home' })).toBeVisible();
 });

@@ -23,6 +23,9 @@ def client():
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     with factory() as db:
         seed(db)
+        from app.competition_metadata import backfill_metadata
+
+        backfill_metadata(db)
 
     def override():
         with factory() as db:

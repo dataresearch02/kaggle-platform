@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .auth import current_user
 from .db import get_db
-from .models import Notebook, User
+from .models import Notebook, NotebookPublication, Dataset, User
 
 router = APIRouter(prefix="/api", tags=["Notebook runtime"])
 
@@ -20,7 +20,16 @@ def hub_username(user):
     return f"arena-{user.id}"
 
 
-def notebook_document(notebook):
+def notebook_document(notebook, db=None, working=False):
+    if db and working:
+        from .models import NotebookWorkingCopy
+
+        working = db.get(NotebookWorkingCopy, notebook.id)
+        if working:
+            return json.loads(working.document)
+    publication = db.get(NotebookPublication, notebook.id) if db is not None else None
+    if publication:
+        return json.loads(publication.document)
     return {
         "nbformat": 4,
         "nbformat_minor": 5,
@@ -162,9 +171,9 @@ async def open_notebook(
     db: Session = Depends(get_db),
     hub: HubClient = Depends(get_hub),
 ):
-    notebook = db.get(Notebook, id)
-    if not notebook:
-        raise HTTPException(404, "Notebook not found")
+    from .notebook_visibility import require_visible
+
+    notebook = require_visible(db, id, user)
     if (await hub.status(user))["state"] != "ready":
         raise HTTPException(
             409, "Start your notebook server and wait until it is ready."
@@ -175,6 +184,39 @@ async def open_notebook(
     existing = await hub.request("GET", endpoint, contents=True, params={"content": 0})
     if existing.status_code == 404:
         # First-open import only. Never replace the working copy or its outputs.
+        import base64
+        from .db import DATA_DIR
+
+        document = notebook_document(notebook, db, working=notebook.owner_id == user.id)
+        for item in document.get("metadata", {}).get("arena_inputs", []):
+            dataset = db.get(Dataset, item["id"])
+            if not dataset:
+                continue
+            source = DATA_DIR / "uploads" / dataset.storage_key
+            if not source.is_file():
+                continue
+            input_endpoint = f"/user/{name}/api/contents/arena-input-{dataset.id}.csv"
+            found = await hub.request(
+                "GET", input_endpoint, contents=True, params={"content": 0}
+            )
+            if found.status_code == 404:
+                hub.expect(
+                    await hub.request(
+                        "PUT",
+                        input_endpoint,
+                        contents=True,
+                        json={
+                            "type": "file",
+                            "format": "base64",
+                            "content": base64.b64encode(source.read_bytes()).decode(
+                                "ascii"
+                            ),
+                        },
+                    ),
+                    (200, 201),
+                )
+            else:
+                hub.expect(found)
         hub.expect(
             await hub.request(
                 "PUT",
@@ -183,7 +225,9 @@ async def open_notebook(
                 json={
                     "type": "notebook",
                     "format": "json",
-                    "content": notebook_document(notebook),
+                    "content": notebook_document(
+                        notebook, db, working=notebook.owner_id == user.id
+                    ),
                 },
             ),
             (200, 201),

@@ -18,7 +18,7 @@ Open **http://localhost:8080** and create an account. API documentation is avail
 
 ## Your work
 
-After you save a notebook, upload a dataset, or publish a model or challenge, **Your work** appears in the sidebar. Datasets, Models, Codes, Competitions and Benchmarks also link to the corresponding category in your personal workspace. Search and filter your content, open it, edit its title and description, or download datasets and published code notebooks. Ownership is checked on the server. Temporary unsaved notebooks and other users' examples are excluded. This view uses existing persistent records; it does not duplicate your data. Use the trash button to delete an owned item after reviewing the confirmation. Dataset uploads are removed; notebook files are queued for cleanup when the runtime is ready. Challenge deletion also removes its entries and submissions. Copies already downloaded or attached to other workspaces remain. Bulk actions are not implemented.
+After you save a notebook, upload a dataset, or publish a model or challenge, **Your work** appears last in the sidebar, separated from the other items by a divider. Learn and Discussions are grouped under **More**. Datasets, Models, Codes, Competitions and Benchmarks also link to the corresponding category in your personal workspace. Search and filter your content, open it, edit its title and description, or download datasets and published code notebooks. Ownership is checked on the server. Temporary unsaved notebooks and other users' examples are excluded. This view uses existing persistent records; it does not duplicate your data. Use the trash button to delete an owned item after reviewing the confirmation. Dataset uploads are removed; notebook files are queued for cleanup when the runtime is ready. Challenge deletion also removes its entries and submissions. Copies already downloaded or attached to other workspaces remain. Bulk actions are not implemented.
 
 ## Integrated notebooks
 
@@ -69,11 +69,11 @@ Creator metadata, test data, answers and scores persist in PostgreSQL. A new `ch
 ## First end-to-end experiment
 
 1. Register an account. Usernames use letters, numbers, and underscores; passwords need at least 10 characters.
-2. Open **Learn → Python foundations**, read a lesson, and mark it complete.
+2. Open **More → Learn → Python foundations**, read a lesson, and mark it complete.
 3. Download **Datasets → City bikes & daily demand**.
 4. Open **Competitions → Predict bike demand**, join, and download test data and the sample submission.
 5. Create a notebook, or open a saved notebook and click **Start session**. Use Python to load a dataset download URL, then train a baseline in the Arena editor. The Intro to machine learning course includes example code.
-6. Upload a UTF-8 CSV with exactly `id,prediction` columns and IDs 7, 8, and 9. Arena calculates RMSE and updates the leaderboard with your best score.
+6. Open the competition’s **Submissions** tab and upload a UTF-8 CSV with exactly `id,prediction` columns and IDs 7, 8, and 9. Arena calculates RMSE and updates the leaderboard with your best score.
 7. Share an approach in Discussions or publish a model reference card.
 
 ## Project structure
@@ -163,3 +163,34 @@ npm ci
 ```
 
 Run `make format` to format the project, or `make format-check` to verify formatting without changing files. Generated files, dependencies, lockfiles, and local environment files are excluded from Prettier.
+
+## Competition pages
+
+Competition cards open full pages at `#competitions/<id>/overview`. Overview, Data, Code, Models, Discussion, Leaderboard, Rules, Team and Submissions have shareable tab URLs and support browser back/forward navigation. The header provides Join competition and shows membership or closed status. Data previews public features only and offers test/sample CSV downloads. Leaderboard displays participants’ best scores. Submissions contains prediction uploads and the signed-in user's latest 100 scored submissions, including timestamps. Team supports creating a team, joining by invite code, listing members and leaving. Team membership persists in PostgreSQL; scores remain individual. Team changes close at the competition deadline.
+
+Creators can link their published Codes and model cards to a competition. These tabs show linked resources, not unrelated community content. Discussion posts are stored per competition. Rules describe the current enforced submission format, size, deadline and scoring behavior; organizer-specific rule editing is not implemented. Competition deletion removes its resource links and discussion posts while retaining the independently published notebooks and model cards.
+
+### Optional Kaggle practice content
+
+See [the sample collection guide](docs/sample-data.md) to import public Iris and Palmer Penguins CSVs, local practice competitions, runnable starter codes and discussion prompts. The import is explicit and repeatable; it preserves existing user content and stores the samples in your configured persistent storage.
+
+### Competition overview and data catalog
+
+Competitions now have editable overview metadata, documented CSV snapshots, and a folder-based data explorer unlocked after joining. Organizers manage dates, prizes, instructions, training/reference files and column descriptions. Dataset owners can edit documentation and attribution. See [the database structure and migration guide](docs/competition-metadata.md).
+
+### Code discovery and publications
+
+Competition code and Data Hub Codes use scroll-loaded lists with personal work, sharing and bookmark filters. Notebooks open on a read-only page; users fork into their own editor, and authors explicitly publish code and outputs. See [the code library guide](docs/code-library.md).
+
+### Sidebar and active events
+
+The sidebar toggle shares a row with Arena home. Compact mode hides the brand
+and initially closes Data Hub and More; their icons toggle the nested navigation.
+Selected rows fill the sidebar width with a right border. Your work is the final
+content item. View Active Events stays at the bottom and opens a dialog with
+queued/running notebook competition evaluations, refreshed every five seconds.
+The main sidebar's empty-state actions start notebook or benchmark creation.
+The event list is private to the signed-in user; synchronous uploads and future
+scheduling features are not represented as background jobs.
+
+See the [main workflow review](docs/logic-review.md) for verified behavior, fixes found during the review, and remaining functional limits.

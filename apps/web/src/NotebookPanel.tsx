@@ -13,16 +13,18 @@ export default function NotebookPanel({
   draft,
   cellCount,
   outputCount,
+  close,
 }: {
   inputs: Input[];
   attach: (item: Input) => Promise<void>;
-  headings: { id: string; title: string }[];
+  headings: { id: string; title: string; level: number }[];
   jump: (id: string) => void;
   ready: boolean;
   notebookId: number;
   draft: boolean;
   cellCount: number;
   outputCount: number;
+  close: () => void;
 }) {
   const [picker, setPicker] = useState(false);
   const [upload, setUpload] = useState(false);
@@ -74,7 +76,12 @@ export default function NotebookPanel({
   }
   return (
     <aside className="notebook-panel" aria-label="Notebook panel">
-      <h2>Notebook</h2>
+      <header className="notebook-panel-heading">
+        <h2>Notebook</h2>
+        <button aria-label="Close notebook panel" title="Close notebook panel" onClick={close}>
+          <X size={20} />
+        </button>
+      </header>
       <details open className="notebook-input-section">
         <summary>Input</summary>
         <div className="notebook-input-actions">
@@ -133,17 +140,21 @@ export default function NotebookPanel({
       </details>
       <details open>
         <summary>Table of contents</summary>
-        <div className="notebook-outline">
+        <nav className="notebook-outline" aria-label="Notebook headings">
           {headings.length ? (
             headings.map((h) => (
-              <button key={h.id} onClick={() => jump(h.id)}>
+              <button
+                key={h.id}
+                style={{ paddingLeft: `${12 + (h.level - 1) * 12}px` }}
+                onClick={() => jump(h.id)}
+              >
                 {h.title}
               </button>
             ))
           ) : (
             <p>Add Markdown headings to outline your notebook.</p>
           )}
-        </div>
+        </nav>
       </details>
       <details>
         <summary>Session options</summary>

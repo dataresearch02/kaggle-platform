@@ -1,14 +1,24 @@
+import type { Page } from './navigation';
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import NotebookWorkspace from './NotebookWorkspace';
 
-export default function NewNotebook({ close, saved }: { close: () => void; saved: () => void }) {
+export default function NewNotebook({
+  close,
+  saved,
+  competitionId,
+}: {
+  close: () => void;
+  saved: () => void;
+  competitionId?: number;
+}) {
   const dialog = useRef<HTMLDialogElement>(null);
   const draft = useRef<string | undefined>(undefined);
   const [draftId, setDraftId] = useState('');
   const [title, setTitle] = useState('Untitled notebook');
   const [error, setError] = useState('');
   const [permanent, setPermanent] = useState(false);
+  const [savedNotebookId, setSavedNotebookId] = useState(0);
   const [closing, setClosing] = useState(false);
   const [saving, setSaving] = useState(false);
   useEffect(() => {
@@ -27,7 +37,10 @@ export default function NewNotebook({ close, saved }: { close: () => void; saved
     };
     const discard = () => remove(draft.current);
     window.addEventListener('pagehide', discard);
-    void api<{ id: string }>('/notebook-drafts', { method: 'POST' })
+    void api<{ id: string }>(
+      `/notebook-drafts${competitionId ? `?competition_id=${competitionId}` : ''}`,
+      { method: 'POST' },
+    )
       .then(({ id }) => {
         if (alive) {
           draft.current = id;
@@ -55,10 +68,11 @@ export default function NewNotebook({ close, saved }: { close: () => void; saved
   async function persist() {
     setSaving(true);
     try {
-      await api(`/notebook-drafts/${draftId}/save`, {
+      const notebook = await api<{ id: number }>(`/notebook-drafts/${draftId}/save`, {
         method: 'POST',
-        body: JSON.stringify({ title: title.trim() }),
+        body: JSON.stringify({ title: title.trim(), competition_id: competitionId }),
       });
+      setSavedNotebookId(notebook.id);
       setPermanent(true);
       setError('');
       saved();
@@ -66,7 +80,7 @@ export default function NewNotebook({ close, saved }: { close: () => void; saved
       setSaving(false);
     }
   }
-  async function dismiss() {
+  async function dismiss(destination?: Page) {
     if (saving || closing) return;
     // Unmount the editor and cancel execution before discarding the temporary file.
     setClosing(true);
@@ -78,6 +92,7 @@ export default function NewNotebook({ close, saved }: { close: () => void; saved
       setError('The server could not finish cleanup. The draft is marked for automatic deletion.');
       close();
     }
+    if (destination) window.location.hash = destination;
   }
   return (
     <dialog
@@ -101,8 +116,10 @@ export default function NewNotebook({ close, saved }: { close: () => void; saved
           title={title}
           onTitleChange={setTitle}
           onClose={() => void dismiss()}
+          onNavigate={(page) => void dismiss(page)}
           permanent={permanent}
-          notebookId={0}
+          notebookId={savedNotebookId}
+          competitionId={competitionId}
           draftId={draftId}
           signedIn
           signIn={() => {}}

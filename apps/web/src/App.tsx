@@ -1,3 +1,9 @@
+import ActiveEvents from './ActiveEvents';
+import Engagement from './Engagement';
+import { nav, dataHubPages, morePages, type Page } from './navigation';
+import CodePage from './CodePage';
+import CodeList from './CodeList';
+import DatasetMetadata from './DatasetMetadata';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   ArrowRight,
@@ -10,12 +16,10 @@ import {
   Download,
   FlaskConical,
   GraduationCap,
-  Home,
-  FolderOpen,
   Layers3,
   LogOut,
   Menu,
-  MessageSquare,
+  Ellipsis,
   Plus,
   Search,
   Sparkles,
@@ -27,30 +31,9 @@ import NotebookWorkspace from './NotebookWorkspace';
 import CreatePage from './CreatePage';
 import NewNotebook from './NewNotebook';
 import CreateDropdown from './CreateDropdown';
+import CompetitionPage, { competitionTabs, type CompetitionTab } from './CompetitionPage';
 import YourWork, { type WorkItem, type WorkKind } from './YourWork';
 
-type Page =
-  | 'work'
-  | 'home'
-  | 'competitions'
-  | 'benchmarks'
-  | 'datasets'
-  | 'notebooks'
-  | 'models'
-  | 'courses'
-  | 'discussions';
-const nav = [
-  { id: 'work', label: 'Your work', icon: FolderOpen },
-  { id: 'home', label: 'Overview', icon: Home },
-  { id: 'competitions', label: 'Competitions', icon: Trophy },
-  { id: 'benchmarks', label: 'Benchmarks', icon: FlaskConical },
-  { id: 'datasets', label: 'Datasets', icon: Database },
-  { id: 'models', label: 'Models', icon: Layers3 },
-  { id: 'notebooks', label: 'Codes', icon: Code2 },
-  { id: 'courses', label: 'Learn', icon: GraduationCap },
-  { id: 'discussions', label: 'Discussions', icon: MessageSquare },
-] as const;
-const dataHubPages: readonly Page[] = ['datasets', 'models', 'notebooks'];
 const intros: Record<Page, [string, string]> = {
   work: ['Your work', 'Manage the content you create.'],
   home: [
@@ -125,16 +108,50 @@ function Modal({
   );
 }
 
+function codeRouteFromHash() {
+  const match = location.hash.match(/^#code\/(\d+)(\/edit)?(?:\?(.*))?$/);
+  if (!match) return null;
+  const competition = new URLSearchParams(match[3] || '').get('competition');
+  return {
+    id: Number(match[1]),
+    edit: !!match[2],
+    competitionId: competition && /^\d+$/.test(competition) ? Number(competition) : undefined,
+  };
+}
+
+function competitionRouteFromHash() {
+  const match = location.hash.match(/^#competitions\/(\d+)(?:\/([a-z]+))?$/);
+  if (!match) return null;
+  return {
+    id: Number(match[1]),
+    tab: competitionTabs.includes(match[2] as CompetitionTab)
+      ? (match[2] as CompetitionTab)
+      : ('overview' as CompetitionTab),
+  };
+}
+
 export default function App() {
   const [page, setPage] = useState<Page>(() => {
     const p = location.hash.slice(1);
-    return nav.some((n) => n.id === p) ? (p as Page) : 'home';
+    return codeRouteFromHash()
+      ? 'notebooks'
+      : competitionRouteFromHash()
+        ? 'competitions'
+        : nav.some((n) => n.id === p)
+          ? (p as Page)
+          : 'home';
   });
+  const [codeRoute, setCodeRoute] = useState(codeRouteFromHash);
+  const [competitionRoute, setCompetitionRoute] = useState(competitionRouteFromHash);
   const [user, setUser] = useState<User | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [featured, setFeatured] = useState<Item[]>([]);
   const [stats, setStats] = useState<Record<string, number>>({});
   const [query, setQuery] = useState('');
+  const [competitionStatus, setCompetitionStatus] = useState('all');
+  const [competitionCategory, setCompetitionCategory] = useState('');
+  const [competitionSort, setCompetitionSort] = useState('newest');
+  const [competitionCategories, setCompetitionCategories] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -144,7 +161,10 @@ export default function App() {
   const [selected, setSelected] = useState<Item | null>(null);
   const [pendingCreate, setPendingCreate] = useState(false);
   const [mobile, setMobile] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(true);
   const [dataHubOpen, setDataHubOpen] = useState(true);
+  const [compact, setCompact] = useState(false);
+  const [hasWork, setHasWork] = useState(false);
   const [work, setWork] = useState<WorkItem[]>([]);
   const [workLoading, setWorkLoading] = useState(false);
   const [workError, setWorkError] = useState('');
@@ -155,13 +175,27 @@ export default function App() {
     setWork((previous) => previous.filter((item) => item.owner_id === user?.id));
     setWorkError('');
     if (!user) {
+      setHasWork(false);
       setWorkLoading(false);
       return;
+    }
+    if (page !== 'work') {
+      api<{ has_work: boolean }>('/work/status')
+        .then((result) => {
+          if (active) setHasWork(result.has_work);
+        })
+        .catch(() => {});
+      return () => {
+        active = false;
+      };
     }
     setWorkLoading(true);
     api<WorkItem[]>('/work')
       .then((items) => {
-        if (active) setWork(items);
+        if (active) {
+          setWork(items);
+          setHasWork(items.length > 0);
+        }
       })
       .catch((e) => {
         if (active) setWorkError(e.message);
@@ -179,19 +213,42 @@ export default function App() {
       .then(setUser)
       .catch(() => {});
     const handler = () => {
+      const code = codeRouteFromHash();
+      setCodeRoute(code);
+      if (code) {
+        setCompetitionRoute(null);
+        setPage('notebooks');
+        setSelected(null);
+        setCreating(false);
+        setMobile(false);
+        return;
+      }
+      const route = competitionRouteFromHash();
+      setCompetitionRoute(route);
+      if (route) {
+        setPage('competitions');
+        setSelected(null);
+        setCreating(false);
+        setMobile(false);
+        return;
+      }
       const p = location.hash.slice(1);
       if (nav.some((n) => n.id === p)) {
         setPage(p as Page);
         if (dataHubPages.includes(p as Page)) setDataHubOpen(true);
+        if (morePages.includes(p as Page)) setMoreOpen(true);
         setSelected(null);
         setQuery('');
+        setCompetitionStatus('all');
+        setCompetitionCategory('');
+        setCompetitionSort('newest');
       }
     };
     window.addEventListener('hashchange', handler);
     return () => window.removeEventListener('hashchange', handler);
   }, []);
   useEffect(() => {
-    if (page === 'work') return;
+    if (page === 'work' || page === 'notebooks' || competitionRoute || codeRoute) return;
     let active = true;
     setLoading(true);
     setError('');
@@ -199,16 +256,26 @@ export default function App() {
     const timer = setTimeout(
       () => {
         const target = page === 'home' ? 'competitions' : page;
+        const parameters = new URLSearchParams({ q: query });
+        if (page === 'competitions') {
+          parameters.set('status', competitionStatus);
+          parameters.set('category', competitionCategory);
+          parameters.set('sort', competitionSort);
+        }
         Promise.all([
-          api<Item[]>(`/${target}?q=${encodeURIComponent(query)}`),
+          api<Item[]>(`/${target}?${parameters}`),
           api<Record<string, number>>('/stats'),
-          ...(page === 'home' ? [api<Item[]>('/datasets')] : []),
+          page === 'home' ? api<Item[]>('/datasets') : Promise.resolve(undefined),
+          page === 'competitions'
+            ? api<{ categories: string[] }>('/competitions/filters')
+            : Promise.resolve(undefined),
         ])
-          .then(([list, counts, datasets]) => {
+          .then(([list, counts, datasets, filters]) => {
             if (active) {
               setItems(list as Item[]);
               setStats(counts as Record<string, number>);
               if (datasets) setFeatured(datasets as Item[]);
+              if (filters) setCompetitionCategories(filters.categories);
             }
           })
           .catch((e) => {
@@ -224,7 +291,16 @@ export default function App() {
       active = false;
       clearTimeout(timer);
     };
-  }, [page, query, revision]);
+  }, [
+    page,
+    query,
+    revision,
+    competitionRoute?.id,
+    codeRoute?.id,
+    competitionStatus,
+    competitionCategory,
+    competitionSort,
+  ]);
   useEffect(() => {
     if (notice) {
       const id = setTimeout(() => setNotice(''), 5000);
@@ -233,7 +309,13 @@ export default function App() {
   }, [notice]);
 
   function go(next: Page) {
+    setCodeRoute(null);
+    setCompetitionRoute(null);
+    setCompetitionStatus('all');
+    setCompetitionCategory('');
+    setCompetitionSort('newest');
     if (dataHubPages.includes(next)) setDataHubOpen(true);
+    if (morePages.includes(next)) setMoreOpen(true);
     location.hash = next;
     setPage(next);
     setSelected(null);
@@ -250,10 +332,18 @@ export default function App() {
     setNotice(message);
   }
   async function open(item: Item) {
+    if (page === 'notebooks') {
+      location.hash = `code/${item.id}${user?.id === item.owner_id ? '/edit' : ''}`;
+      return;
+    }
+    if (page === 'competitions' || page === 'home') {
+      location.hash = `competitions/${item.id}/overview`;
+      return;
+    }
     try {
       setSelected(
-        page === 'datasets' || page === 'competitions' || page === 'benchmarks' || page === 'home'
-          ? await api<Item>(`/${page === 'home' ? 'competitions' : page}/${item.id}`)
+        page === 'datasets' || page === 'benchmarks'
+          ? await api<Item>(`/${page}/${item.id}`)
           : item,
       );
     } catch (e) {
@@ -266,6 +356,8 @@ export default function App() {
       <button
         key={item.id}
         className={page === item.id ? 'active' : ''}
+        aria-label={item.label}
+        title={item.label}
         aria-current={page === item.id ? 'page' : undefined}
         onClick={() => {
           if (item.id === 'work') setWorkFilter('all');
@@ -273,21 +365,42 @@ export default function App() {
         }}
       >
         <item.icon size={19} />
-        {item.label}
-        {page === item.id && <span className="nav-indicator" />}
+        <span className="navigation-label">{item.label}</span>
       </button>
     );
   }
 
   return (
-    <div className="app">
+    <div className={`app ${compact ? 'compact-navigation' : ''}`}>
       <aside className={`sidebar ${mobile ? 'visible' : ''}`}>
-        <button className="brand" onClick={() => go('home')}>
-          <span className="brand-symbol">
-            a<span />
-          </span>
-          arena<span className="brand-dot">.</span>
-        </button>
+        <div className="sidebar-header">
+          <button
+            className="navigation-toggle"
+            aria-label={compact ? 'Expand navigation' : 'Collapse navigation'}
+            title={compact ? 'Expand navigation' : 'Collapse navigation'}
+            aria-expanded={!compact}
+            onClick={() => {
+              setCompact(!compact);
+              setDataHubOpen(compact);
+              setMoreOpen(compact);
+            }}
+          >
+            <Menu size={21} />
+          </button>
+          <button
+            className="brand"
+            aria-label="Arena home"
+            hidden={compact}
+            onClick={() => go('home')}
+          >
+            <span className="brand-symbol">
+              a<span />
+            </span>
+            <span className="navigation-label">
+              arena<span className="brand-dot">.</span>
+            </span>
+          </button>
+        </div>
         <CreateDropdown
           onSelect={(target) => {
             go(target as Page);
@@ -298,21 +411,21 @@ export default function App() {
             }
           }}
         />
-        <div className="nav-label">WORKSPACE</div>
         <nav aria-label="Main navigation">
-          {user && work.length > 0 && navigationItem(nav[0])}
           {nav
             .filter((item) => ['home', 'competitions', 'benchmarks'].includes(item.id))
             .map(navigationItem)}
           <div className="data-hub-group">
             <button
               className={`data-hub-toggle ${dataHubPages.includes(page) ? 'selected' : ''}`}
+              aria-label="Data Hub"
+              title="Data Hub"
               aria-expanded={dataHubOpen}
               aria-controls="data-hub-navigation"
               onClick={() => setDataHubOpen(!dataHubOpen)}
             >
               <Database size={19} />
-              Data Hub
+              <span className="navigation-label">Data Hub</span>
               <ChevronDown size={16} className={dataHubOpen ? 'expanded' : ''} />
             </button>
             <div
@@ -325,21 +438,44 @@ export default function App() {
               {nav.filter((item) => dataHubPages.includes(item.id)).map(navigationItem)}
             </div>
           </div>
-          {nav.filter((item) => ['courses', 'discussions'].includes(item.id)).map(navigationItem)}
+          <div className="more-navigation">
+            <button
+              type="button"
+              aria-label="More"
+              aria-expanded={moreOpen}
+              onClick={() => setMoreOpen(!moreOpen)}
+            >
+              <Ellipsis size={20} />
+              <span className="navigation-label">More</span>
+              <ChevronDown size={16} className="navigation-label" />
+            </button>
+            <div
+              className="more-navigation-items"
+              role="group"
+              aria-label="More"
+              hidden={!moreOpen}
+            >
+              {nav.filter((item) => morePages.includes(item.id)).map(navigationItem)}
+            </div>
+          </div>
+          {user && hasWork && (
+            <div className="your-work-navigation">
+              {navigationItem(nav.find((item) => item.id === 'work')!)}
+            </div>
+          )}
         </nav>
-        <div className="sidebar-note">
-          <span className="tiny-icon">
-            <FlaskConical size={20} />
-          </span>
-          <strong>Small steps. Real progress.</strong>
-          <p>Learn a skill, try an idea, and see where it takes you.</p>
-          <button onClick={() => go('courses')}>
-            Find your first course <ArrowRight size={15} />
-          </button>
-        </div>
-        <div className="sidebar-foot">
-          <span className="status-dot" /> Community edition <span>v0.1</span>
-        </div>
+        <ActiveEvents
+          compact={compact}
+          signedIn={!!user}
+          create={(target) => {
+            go(target);
+            if (user) setCreating(true);
+            else {
+              setPendingCreate(true);
+              setAuth('register');
+            }
+          }}
+        />
       </aside>
       <div className="main-shell">
         <header className="topbar">
@@ -388,7 +524,29 @@ export default function App() {
           </div>
         </header>
         <main>
-          {page === 'work' ? (
+          {codeRoute ? (
+            <CodePage
+              key={`${codeRoute.id}-${codeRoute.edit}-${user?.id}`}
+              id={codeRoute.id}
+              edit={codeRoute.edit}
+              competitionId={codeRoute.competitionId}
+              user={user}
+              signIn={() => setAuth('login')}
+              changed={() => changed('Your code library was updated')}
+            />
+          ) : competitionRoute ? (
+            <CompetitionPage
+              key={competitionRoute.id}
+              id={competitionRoute.id}
+              tab={competitionRoute.tab}
+              setTab={(tab) => {
+                location.hash = `competitions/${competitionRoute.id}/${tab}`;
+              }}
+              user={user}
+              signIn={() => setAuth('login')}
+              back={() => go('competitions')}
+            />
+          ) : page === 'work' ? (
             <YourWork
               key={`${user?.id}-${workFilter}`}
               items={work}
@@ -399,6 +557,14 @@ export default function App() {
               initialFilter={workFilter}
               refresh={() => changed('Your work updated')}
               open={(item) => {
+                if (item.work_kind === 'notebooks') {
+                  location.hash = `code/${item.id}/edit`;
+                  return;
+                }
+                if (item.work_kind === 'competitions') {
+                  location.hash = `competitions/${item.id}/overview`;
+                  return;
+                }
                 setWorkSelection(item.work_kind);
                 if (['datasets', 'competitions', 'benchmarks'].includes(item.work_kind)) {
                   void api<Item>(`/${item.work_kind}/${item.id}`)
@@ -407,6 +573,8 @@ export default function App() {
                 } else setSelected(item);
               }}
             />
+          ) : page === 'notebooks' ? (
+            <CodeList key={`${user?.id}-${revision}`} user={user} signIn={() => setAuth('login')} />
           ) : (
             <>
               {page === 'home' ? (
@@ -541,9 +709,9 @@ export default function App() {
                   {['datasets', 'models', 'notebooks', 'competitions', 'benchmarks'].includes(
                     page,
                   ) && (
-                    <div className="collection-tabs">
-                      <span>Explore</span>
+                    <div className="collection-actions">
                       <button
+                        className="button secondary"
                         onClick={() => {
                           setWorkFilter(page as WorkKind);
                           go('work');
@@ -557,8 +725,8 @@ export default function App() {
                     <label className="search">
                       <Search size={18} />
                       <input
-                        aria-label={`Search ${page === 'notebooks' ? 'codes' : page}`}
-                        placeholder={`Search ${page === 'notebooks' ? 'codes' : page}…`}
+                        aria-label={`Search ${page}`}
+                        placeholder={`Search ${page}…`}
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                       />
@@ -567,6 +735,65 @@ export default function App() {
                       {items.length} {items.length === 1 ? 'result' : 'results'}
                     </span>
                   </div>
+                  {page === 'competitions' && (
+                    <div className="competition-filters" aria-label="Competition filters">
+                      <label>
+                        Status
+                        <select
+                          aria-label="Competition status"
+                          value={competitionStatus}
+                          onChange={(e) => setCompetitionStatus(e.target.value)}
+                        >
+                          <option value="all">All competitions</option>
+                          <option value="open">Open</option>
+                          <option value="closed">Closed</option>
+                        </select>
+                      </label>
+                      <label>
+                        Category
+                        <select
+                          aria-label="Competition category"
+                          value={competitionCategory}
+                          onChange={(e) => setCompetitionCategory(e.target.value)}
+                        >
+                          <option value="">All categories</option>
+                          {competitionCategories.map((category) => (
+                            <option key={category} value={category}>
+                              {category}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Sort by
+                        <select
+                          aria-label="Sort competitions"
+                          value={competitionSort}
+                          onChange={(e) => setCompetitionSort(e.target.value)}
+                        >
+                          <option value="newest">Newest</option>
+                          <option value="closing">Closing soon</option>
+                          <option value="title">Title A–Z</option>
+                        </select>
+                      </label>
+                      {(query ||
+                        competitionStatus !== 'all' ||
+                        competitionCategory ||
+                        competitionSort !== 'newest') && (
+                        <button
+                          className="text-button"
+                          onClick={() => {
+                            setQuery('');
+                            setCompetitionStatus('all');
+                            setCompetitionCategory('');
+                            setCompetitionSort('newest');
+                          }}
+                        >
+                          Clear filters
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
               {error ? (
@@ -968,6 +1195,7 @@ function Detail({
             <span>{((item.size || 0) / 1024).toFixed(1)} KB</span>
             <span>CSV</span>
           </div>
+          <DatasetMetadata id={item.id} owner={!!user && item.owner_id === user.id} />
           <h3>
             Data preview <small>First 10 rows</small>
           </h3>
@@ -1110,6 +1338,7 @@ function Detail({
             title={item.title}
             initialCode={item.code || ''}
             signedIn={Boolean(user)}
+            canPublish={!!user && item.owner_id === user.id}
             signIn={signIn}
           />
           <details className="notebook-template">
@@ -1203,12 +1432,20 @@ function Detail({
       )}
       {page === 'discussions' && (
         <>
+          <Engagement
+            kind="discussion"
+            id={item.id}
+            user={user}
+            signIn={signIn}
+            allowReply={false}
+          />
           <h3>Conversation</h3>
           {comments.length === 0 && <p className="muted">Be the first to reply.</p>}
           {comments.map((c) => (
             <div className="comment" key={c.id}>
               <strong>{c.owner}</strong>
               <p>{c.body}</p>
+              <Engagement kind="discussion-comment" id={c.id} user={user} signIn={signIn} />
             </div>
           ))}
           <form
