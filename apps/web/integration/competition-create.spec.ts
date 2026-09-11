@@ -25,7 +25,7 @@ test('joined member creates temporary competition code and saves it into Your wo
       .fill("print('COMPETITION_NOTEBOOK_READY')");
     await page.getByRole('button', { name: 'Run all', exact: true }).click();
     await expect(page.getByLabel('Output cell 1')).toContainText('COMPETITION_NOTEBOOK_READY');
-    const navigation = page.getByRole('navigation', { name: 'Platform navigation' });
+    const navigation = page.locator('.notebook-sidebar');
     await navigation.getByRole('button', { name: 'Expand navigation', exact: true }).click();
     await expect(navigation.getByRole('button', { name: 'Collapse navigation' })).toHaveAttribute(
       'aria-expanded',
@@ -67,7 +67,7 @@ test('joined member creates temporary competition code and saves it into Your wo
       );
     await page.getByRole('button', { name: 'Save & Commit', exact: true }).click();
     await page.getByRole('button', { name: 'Run and evaluate', exact: true }).click();
-    await expect(page.locator('.commit-status')).toContainText('Evaluated · RMSE', {
+    await expect(page.locator('.commit-status')).toContainText('Evaluated · Score', {
       timeout: 90000,
     });
     await page.getByRole('button', { name: 'Close notebook editor', exact: true }).click();
@@ -101,7 +101,7 @@ test('joined member creates temporary competition code and saves it into Your wo
     await expect(
       page.getByRole('button', { name: 'Close notebook editor', exact: true }),
     ).toBeVisible();
-    const rail = page.getByRole('navigation', { name: 'Platform navigation', exact: true });
+    const rail = page.locator('.notebook-sidebar');
     await expect(rail.getByRole('group', { name: 'Data Hub' })).toBeHidden();
     await rail.getByRole('button', { name: 'Data Hub', exact: true }).click();
     await expect(rail.getByRole('button', { name: 'Codes', exact: true })).toHaveAttribute(

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import os
 import secrets
 import time
 from datetime import datetime, timezone
@@ -42,7 +43,9 @@ def eligible(db, notebook_id, competition_id, user):
     )
     if not notebook or notebook.owner_id != user.id:
         raise HTTPException(404, "Your notebook was not found")
-    competition = db.get(Competition, competition_id)
+    competition = db.scalar(
+        select(Competition).where(Competition.id == competition_id).with_for_update()
+    )
     if not competition:
         raise HTTPException(404, "Competition not found")
     if datetime.fromisoformat(competition.deadline) < datetime.now(timezone.utc):
@@ -225,6 +228,10 @@ async def run_cell(hub, user, kernel, code):
 
 
 async def execute_snapshot(job_id, hub=None):
+    if os.getenv("EVALUATION_BACKEND") == "isolated" and hub is None:
+        from .isolated_runner import execute
+
+        return await execute(job_id)
     hub = hub or HubClient()
     kernel = None
     user = None
@@ -246,7 +253,9 @@ async def execute_snapshot(job_id, hub=None):
             filename = job.output_filename
             inputs = []
             for item in document.get("metadata", {}).get("arena_inputs", []):
-                dataset = db.get(Dataset, item["id"])
+                from .dataset_access import readable
+
+                dataset = readable(db, item["id"], user)
                 if not dataset:
                     raise ValueError("An attached dataset is no longer available")
                 inputs.append(
@@ -348,12 +357,16 @@ async def execute_snapshot(job_id, hub=None):
 
 def complete_commit(job_id, document, predictions):
     with SessionLocal() as db:
-        job = db.get(NotebookCommit, job_id)
+        job = db.scalar(
+            select(NotebookCommit).where(NotebookCommit.id == job_id).with_for_update()
+        )
         if not job or job.status != "running":
             return
         user = db.get(User, job.owner_id)
         notebook, competition = eligible(db, job.notebook_id, job.competition_id, user)
-        score = score_csv(predictions, json.loads(competition.solution))
+        score = score_csv(
+            predictions, json.loads(competition.solution), competition.metric
+        )
         store_publication(db, notebook, Document.model_validate(document))
         working = db.get(NotebookWorkingCopy, notebook.id)
         if working:
@@ -374,14 +387,16 @@ def complete_commit(job_id, document, predictions):
                     resource_id=notebook.id,
                 )
             )
-        db.add(
-            Submission(
-                user_id=user.id,
-                competition_id=competition.id,
-                filename=job.output_filename,
-                score=score,
-            )
+        submission = Submission(
+            user_id=user.id,
+            competition_id=competition.id,
+            filename=job.output_filename,
+            score=score,
         )
+        db.add(submission)
+        from .team_scoring import attach_team
+
+        attach_team(db, submission)
         job.status, job.score, job.document = "succeeded", score, json.dumps(document)
         db.commit()
 
@@ -411,7 +426,7 @@ async def commit_worker():
             if job_id:
                 with SessionLocal() as db:
                     job = db.get(NotebookCommit, job_id)
-                    if job:
+                    if job and job.status != "cancelled":
                         job.status = "failed"
                         job.error = (
                             str(getattr(exc, "detail", exc))
@@ -421,7 +436,7 @@ async def commit_worker():
             await asyncio.sleep(1)
 
 
-def migrate_forks(db):
+def migrate_forks(db, recover=True):
     # Remove the old automatic competition links once, preserving owners' saved source.
     for publication in db.scalars(
         select(NotebookPublication).where(NotebookPublication.forked_from.is_not(None))
@@ -449,11 +464,29 @@ def migrate_forks(db):
         )
         for link in links:
             db.delete(link)
-    for job in db.scalars(
-        select(NotebookCommit).where(NotebookCommit.status == "running")
+    for job in (
+        db.scalars(select(NotebookCommit).where(NotebookCommit.status == "running"))
+        if recover
+        else []
     ):
         job.status, job.error = (
             "failed",
             "Server restarted during execution. Save and commit again.",
         )
     db.commit()
+
+
+@router.post("/{id}/commits/{job_id}/cancel")
+def cancel_commit(
+    id: int, job_id: int, user=Depends(current_user), db: Session = Depends(get_db)
+):
+    job = db.scalar(
+        select(NotebookCommit).where(NotebookCommit.id == job_id).with_for_update()
+    )
+    if not job or job.notebook_id != id or job.owner_id != user.id:
+        raise HTTPException(404, "Your commit was not found")
+    if job.status in ("queued", "running"):
+        job.status = "cancelled"
+        job.error = "Cancelled by owner"
+        db.commit()
+    return status(job)

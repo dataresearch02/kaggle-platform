@@ -94,16 +94,21 @@ async def lifespan(app):
     with SessionLocal() as db:
         seed(db)
         backfill_metadata(db)
-        migrate_forks(db)
-    commits = asyncio.create_task(commit_worker())
+        migrate_forks(db, recover=os.getenv("EVALUATION_BACKEND") != "isolated")
+    commits = (
+        asyncio.create_task(commit_worker())
+        if os.getenv("EVALUATION_BACKEND") != "isolated"
+        else None
+    )
     cleanup = asyncio.create_task(cleanup_drafts())
     work_cleanup = asyncio.create_task(cleanup_work_files())
     try:
         yield
     finally:
-        commits.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await commits
+        if commits:
+            commits.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await commits
         work_cleanup.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await work_cleanup
@@ -127,8 +132,25 @@ app.include_router(competition_pages_router)
 app.include_router(metadata_router)
 app.include_router(code_router)
 app.include_router(commit_router)
+from .notebook_versions import router as version_router
+
+from .dataset_access import (
+    router as access_router,
+    readable as readable_dataset,
+    visible_datasets,
+)
+from .models import DatasetAccess, DatasetShare
+
+app.include_router(access_router)
+app.include_router(version_router)
 app.include_router(team_router)
 app.include_router(engagement_router)
+from .accounts import router as account_router
+
+app.include_router(account_router)
+from .artifacts import router as artifacts_router, delete_artifacts
+
+app.include_router(artifacts_router)
 
 
 @app.middleware("http")
@@ -143,7 +165,8 @@ async def same_origin_mutations(request: Request, call_next):
             ).split(",")
         )
         origin = request.headers.get("origin")
-        if request.headers.get("x-arena-client") != "web" or (
+        bearer = request.headers.get("authorization", "").lower().startswith("bearer ")
+        if (request.headers.get("x-arena-client") != "web" and not bearer) or (
             origin and origin not in allowed
         ):
             return JSONResponse(
@@ -153,6 +176,8 @@ async def same_origin_mutations(request: Request, call_next):
                 },
             )
     response = await call_next(request)
+    if request.url.path.startswith("/api/account/"):
+        response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return response
@@ -250,6 +275,16 @@ def register(data: Credentials, response: Response, db: DBSession = Depends(get_
         db.rollback()
         raise HTTPException(409, "Username already exists")
     new_session(db, user, response)
+    from .models import ServiceNotice
+
+    db.add(
+        ServiceNotice(
+            user_id=user.id,
+            title="Welcome to Arena",
+            body="Your account is ready. Complete your profile, explore community work, and manage your API tokens from the account menu.",
+        )
+    )
+    db.commit()
     return public(user)
 
 
@@ -282,8 +317,19 @@ def logout(request: Request, response: Response, db: DBSession = Depends(get_db)
 
 
 @app.get("/api/datasets")
-def datasets(q: str = "", db: DBSession = Depends(get_db)):
-    return listing(db, Dataset, q)
+def datasets(q: str = "", user=Depends(optional_user), db: DBSession = Depends(get_db)):
+    return [
+        public(row, db)
+        for row in db.scalars(
+            select(Dataset)
+            .where(
+                visible_datasets(user),
+                Dataset.title.icontains(q[:100], autoescape=True),
+            )
+            .order_by(Dataset.id.desc())
+            .limit(100)
+        )
+    ]
 
 
 @app.post("/api/datasets", status_code=201)
@@ -338,6 +384,7 @@ async def upload_dataset(
     try:
         db.flush()
         ensure_profile(db, obj)
+        db.add(DatasetAccess(dataset_id=obj.id, visibility="private"))
         db.commit()
     except Exception:
         db.rollback()
@@ -347,8 +394,10 @@ async def upload_dataset(
 
 
 @app.get("/api/datasets/{id}")
-def dataset_detail(id: int, db: DBSession = Depends(get_db)):
-    obj = require(db, Dataset, id)
+def dataset_detail(
+    id: int, user=Depends(optional_user), db: DBSession = Depends(get_db)
+):
+    obj = readable_dataset(db, id, user)
     with (DATA_DIR / "uploads" / obj.storage_key).open(
         encoding="utf-8-sig", newline=""
     ) as file:
@@ -362,8 +411,10 @@ def dataset_detail(id: int, db: DBSession = Depends(get_db)):
 
 
 @app.get("/api/datasets/{id}/download")
-def download_dataset(id: int, db: DBSession = Depends(get_db)):
-    obj = require(db, Dataset, id)
+def download_dataset(
+    id: int, user=Depends(optional_user), db: DBSession = Depends(get_db)
+):
+    obj = readable_dataset(db, id, user)
     return FileResponse(
         DATA_DIR / "uploads" / obj.storage_key,
         filename=obj.filename,
@@ -439,6 +490,7 @@ async def create_challenge(
     description: str = Form(min_length=3, max_length=5000),
     category: str = Form(default="Regression", min_length=1, max_length=80),
     prize: str = Form(default="Knowledge", max_length=80),
+    metric: Literal["RMSE", "MAE", "Accuracy", "LogLoss"] = Form(default="RMSE"),
     deadline: str = Form(default=""),
     test_file: UploadFile = File(),
     solution_file: UploadFile = File(),
@@ -460,12 +512,14 @@ async def create_challenge(
         test_text, solution = validate_challenge(test_content, answer_content)
     except ValueError as exc:
         raise HTTPException(422, str(exc))
+    if metric == "LogLoss" and any(value not in (0, 1) for value in solution.values()):
+        raise HTTPException(422, "Binary log loss answers must be 0 or 1")
     obj = Competition(
         title=title,
         description=description,
         category=category,
         prize=prize,
-        metric="RMSE",
+        metric=metric,
         deadline=closes.astimezone(timezone.utc).isoformat(),
         solution=json.dumps(solution),
     )
@@ -486,23 +540,14 @@ async def create_challenge(
 @app.get("/api/competitions/{id}")
 def competition(id: int, db: DBSession = Depends(get_db)):
     obj = require(db, Competition, id)
-    scores = db.execute(
-        select(User.username, func.min(Submission.score).label("score"))
-        .join(Submission, Submission.user_id == User.id)
-        .where(Submission.competition_id == id)
-        .group_by(User.id, User.username)
-        .order_by(func.min(Submission.score), User.username)
-        .limit(100)
-    ).all()
+    from .team_scoring import leaderboard
+
     return {
         **public(obj, db),
         "participants": db.scalar(
             select(func.count()).select_from(Entry).where(Entry.competition_id == id)
         ),
-        "leaderboard": [
-            {"rank": i + 1, "username": row.username, "score": row.score}
-            for i, row in enumerate(scores)
-        ],
+        "leaderboard": leaderboard(db, obj),
     }
 
 
@@ -567,7 +612,9 @@ async def submit(
     user: User = Depends(current_user),
     db: DBSession = Depends(get_db),
 ):
-    obj = require(db, Competition, id)
+    obj = db.scalar(select(Competition).where(Competition.id == id).with_for_update())
+    if not obj:
+        raise HTTPException(404, "Competition not found")
     if datetime.fromisoformat(obj.deadline) < datetime.now(timezone.utc):
         raise HTTPException(409, "Competition has closed")
     if not db.scalar(
@@ -576,7 +623,7 @@ async def submit(
         raise HTTPException(403, "Join the competition before submitting")
     content = await read_upload(file, 1024 * 1024)
     try:
-        score = score_csv(content, json.loads(obj.solution))
+        score = score_csv(content, json.loads(obj.solution), obj.metric)
     except ValueError as exc:
         raise HTTPException(422, str(exc))
     submission = Submission(
@@ -586,6 +633,9 @@ async def submit(
         score=score,
     )
     db.add(submission)
+    from .team_scoring import attach_team
+
+    attach_team(db, submission)
     db.commit()
     return public(submission)
 
@@ -595,12 +645,14 @@ async def submit(
 def my_submissions(
     id: int, user: User = Depends(current_user), db: DBSession = Depends(get_db)
 ):
+    from .team_scoring import history_filter
+
     require(db, Competition, id)
     return [
         public(row)
         for row in db.scalars(
             select(Submission)
-            .where(Submission.user_id == user.id, Submission.competition_id == id)
+            .where(history_filter(db, id, user), Submission.competition_id == id)
             .order_by(Submission.id.desc())
             .limit(100)
         )
@@ -633,6 +685,16 @@ def create_notebook(
 ):
     obj = Notebook(owner_id=user.id, **data.model_dump())
     db.add(obj)
+    db.flush()
+    document = notebook_document(obj)
+    db.add(
+        NotebookWorkingCopy(
+            notebook_id=obj.id, document=json.dumps(document), private=1
+        )
+    )
+    from .notebook_versions import save_version
+
+    save_version(db, obj, document)
     db.commit()
     return public(obj, db)
 
@@ -778,7 +840,10 @@ def create_model(
     user: User = Depends(current_user),
     db: DBSession = Depends(get_db),
 ):
-    obj = ModelCard(owner_id=user.id, **{**data.model_dump(), "url": str(data.url)})
+    obj = ModelCard(
+        owner_id=user.id,
+        **{**data.model_dump(), "url": str(data.url) if data.url else ""},
+    )
     db.add(obj)
     db.commit()
     return public(obj, db)
@@ -855,7 +920,11 @@ async def delete_work(
         row = owned_work(kind, id, user, db)
         db.refresh(row, with_for_update=True)
         task = None
+        if kind in ("datasets", "models"):
+            delete_artifacts(db, kind, id, user.id)
         if kind == "datasets":
+            db.execute(delete(DatasetShare).where(DatasetShare.dataset_id == id))
+            db.execute(delete(DatasetAccess).where(DatasetAccess.dataset_id == id))
             db.execute(delete(DatasetProfile).where(DatasetProfile.dataset_id == id))
             db.execute(
                 update(CompetitionDataFile)
@@ -881,6 +950,9 @@ async def delete_work(
                 raise HTTPException(
                     409, "Wait for the notebook commit to finish before deleting"
                 )
+            from .models import NotebookVersion
+
+            db.execute(delete(NotebookVersion).where(NotebookVersion.notebook_id == id))
             db.execute(delete(NotebookCommit).where(NotebookCommit.notebook_id == id))
             db.execute(
                 delete(NotebookWorkingCopy).where(NotebookWorkingCopy.notebook_id == id)
@@ -917,6 +989,15 @@ async def delete_work(
             )
             db.add(task)
         elif kind in ("competitions", "benchmarks"):
+            from .models import SubmissionTeam
+
+            db.execute(
+                delete(SubmissionTeam).where(
+                    SubmissionTeam.submission_id.in_(
+                        select(Submission.id).where(Submission.competition_id == id)
+                    )
+                )
+            )
             db.execute(delete(Submission).where(Submission.competition_id == id))
             db.execute(
                 delete(CompetitionTeamMember).where(

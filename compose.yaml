@@ -32,6 +32,7 @@ services:
       POSTGRES_USER: arena
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
       DATA_DIR: /data
+      EVALUATION_BACKEND: isolated
       ALLOWED_ORIGINS: http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173
       JUPYTERHUB_API_URL: http://jupyterhub:8081/jupyter/hub/api
       JUPYTERHUB_PROXY_URL: http://jupyterhub:8000/jupyter
@@ -52,6 +53,28 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+  evaluation-worker:
+    build: ./apps/api
+    user: '0:0'
+    command: ['python', '-m', 'app.evaluation_worker']
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: arena
+      POSTGRES_USER: arena
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+      DATA_DIR: /data
+      EVALUATION_BACKEND: isolated
+      EVALUATION_HOST_PATH: ${DATA_ROOT}/platform/evaluations
+      EVALUATION_IMAGE: arena-singleuser:5.3.0
+    volumes:
+      - ${DATA_ROOT}/platform:/data:z
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+    depends_on:
+      api:
+        condition: service_healthy
+      notebook-image:
+        condition: service_completed_successfully
     restart: unless-stopped
   web:
     build: ./apps/web

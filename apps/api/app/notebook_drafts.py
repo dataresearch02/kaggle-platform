@@ -208,13 +208,15 @@ async def save(
         draft.notebook_id = notebook.id
     notebook.title = data.title
     notebook.code = code
-    if data.competition_id is not None:
-        working = db.get(NotebookWorkingCopy, notebook.id)
-        if not working:
-            working = NotebookWorkingCopy(notebook_id=notebook.id, private=1)
-            db.add(working)
-        working.competition_id = data.competition_id
-        working.document = json.dumps(document)
+    working = db.get(NotebookWorkingCopy, notebook.id)
+    if not working:
+        working = NotebookWorkingCopy(notebook_id=notebook.id, private=1)
+        db.add(working)
+    working.competition_id = data.competition_id
+    working.document = json.dumps(document)
+    from .notebook_versions import save_version
+
+    save_version(db, notebook, document)
     # The working copy retains Markdown, metadata and outputs, not only template code.
     hub.expect(
         await hub.request(
@@ -225,11 +227,6 @@ async def save(
         ),
         (200, 201),
     )
-    # Import after router initialization: the editor also uses draft lifecycle helpers.
-    from .code_pages import store_publication, Document
-
-    if data.competition_id is None:
-        store_publication(db, notebook, Document.model_validate(document))
     draft.expires_at = time.time() + LEASE_SECONDS
     db.commit()
     return {"id": notebook.id, "title": notebook.title}

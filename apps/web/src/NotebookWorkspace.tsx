@@ -1,3 +1,4 @@
+import NotebookHistory from './NotebookHistory';
 import CommitNotebook from './CommitNotebook';
 import { notebookHeadings } from './notebookHeadings';
 import PlatformRail from './PlatformRail';
@@ -170,7 +171,7 @@ export default function NotebookWorkspace({
   title?: string;
   onTitleChange?: (value: string) => void;
   onClose?: () => void;
-  onNavigate?: (page: Page) => void;
+  onNavigate?: (page: Page, create?: boolean) => void;
   permanent?: boolean;
   canPublish?: boolean;
   competitionId?: number;
@@ -592,11 +593,16 @@ export default function NotebookWorkspace({
         signedIn={signedIn}
         permanent={permanent || notebookId > 0}
         disabled={saving}
-        navigate={(page) => {
-          if (onNavigate) onNavigate(page);
+        navigate={(page, create) => {
+          if (onNavigate) onNavigate(page, create);
           else {
             onClose?.();
             window.location.hash = page;
+            if (create)
+              setTimeout(
+                () => window.dispatchEvent(new CustomEvent('arena-create', { detail: page })),
+                0,
+              );
           }
         }}
       />
@@ -635,6 +641,18 @@ export default function NotebookWorkspace({
             {saving ? 'Saving…' : 'Save notebook'}
             <span>{permanent || savedAt ? '✓' : '0'}</span>
           </button>
+          {notebookId > 0 && (
+            <NotebookHistory
+              id={notebookId}
+              disabled={busy}
+              restore={(snapshot) => {
+                doc.current = snapshot;
+                setDocument(snapshot);
+                setDirty(true);
+                setActive(snapshot.cells[0]?.id || '');
+              }}
+            />
+          )}
           {competitionId && notebookId > 0 && (
             <CommitNotebook
               notebookId={notebookId}
@@ -647,7 +665,7 @@ export default function NotebookWorkspace({
           {competitionId && !notebookId && (
             <span className="muted">Save to enable competition commit</span>
           )}
-          {canPublish && !draftId && !competitionId && (
+          {canPublish && notebookId > 0 && !competitionId && (
             <button
               className="button secondary"
               disabled={busy || state !== 'ready'}

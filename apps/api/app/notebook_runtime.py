@@ -6,6 +6,7 @@ from urllib.parse import quote, urlencode, unquote, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth import current_user
@@ -21,12 +22,12 @@ def hub_username(user):
 
 
 def notebook_document(notebook, db=None, working=False):
-    if db and working:
+    if db:
         from .models import NotebookWorkingCopy
 
-        working = db.get(NotebookWorkingCopy, notebook.id)
-        if working:
-            return json.loads(working.document)
+        copy = db.get(NotebookWorkingCopy, notebook.id)
+        if copy and (working or copy.private):
+            return json.loads(copy.document)
     publication = db.get(NotebookPublication, notebook.id) if db is not None else None
     if publication:
         return json.loads(publication.document)
@@ -189,7 +190,11 @@ async def open_notebook(
 
         document = notebook_document(notebook, db, working=notebook.owner_id == user.id)
         for item in document.get("metadata", {}).get("arena_inputs", []):
-            dataset = db.get(Dataset, item["id"])
+            from .dataset_access import visible_datasets
+
+            dataset = db.scalar(
+                select(Dataset).where(Dataset.id == item["id"], visible_datasets(user))
+            )
             if not dataset:
                 continue
             source = DATA_DIR / "uploads" / dataset.storage_key

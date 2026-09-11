@@ -183,7 +183,9 @@ export default function CompetitionPage({
           <Calendar size={16} />
           Closes {item.deadline ? new Date(item.deadline).toLocaleString() : '—'}
         </span>
-        <span>{item.metric} · lower is better</span>
+        <span>
+          {item.metric} · {item.metric === 'Accuracy' ? 'higher' : 'lower'} is better
+        </span>
       </div>
       <nav className="competition-tabs" aria-label="Competition sections">
         {competitionTabs.map((name) => (
@@ -433,6 +435,7 @@ export default function CompetitionPage({
             {user && (
               <>
                 <h3>Your submissions</h3>
+                <p className="muted">Includes submissions from your current team.</p>
                 {submissions.length ? (
                   <div className="table-scroll">
                     <table>

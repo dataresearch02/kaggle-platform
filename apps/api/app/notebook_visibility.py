@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 from sqlalchemy import select, or_
-from .models import Notebook, NotebookWorkingCopy
+from .models import Notebook, NotebookWorkingCopy, NotebookShare
 
 
 def visible_notebooks(user):
@@ -8,7 +8,13 @@ def visible_notebooks(user):
         NotebookWorkingCopy.private == 1
     )
     return or_(
-        Notebook.id.not_in(private), Notebook.owner_id == (user.id if user else -1)
+        Notebook.id.not_in(private),
+        Notebook.owner_id == (user.id if user else -1),
+        Notebook.id.in_(
+            select(NotebookShare.notebook_id).where(
+                NotebookShare.user_id == (user.id if user else -1)
+            )
+        ),
     )
 
 

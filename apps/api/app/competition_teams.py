@@ -35,6 +35,32 @@ def can_change(db, id, user):
     ):
         raise HTTPException(403, "Join the competition before managing a team")
 
+    from .models import Submission, SubmissionTeam, NotebookCommit
+
+    member = membership(db, id, user)
+    submitted = db.scalar(
+        select(Submission.id).where(
+            Submission.competition_id == id, Submission.user_id == user.id
+        )
+    )
+    team_submitted = member and db.scalar(
+        select(SubmissionTeam.submission_id).where(
+            SubmissionTeam.team_id == member.team_id
+        )
+    )
+    active = db.scalar(
+        select(NotebookCommit.id).where(
+            NotebookCommit.competition_id == id,
+            NotebookCommit.owner_id == user.id,
+            NotebookCommit.status.in_(["queued", "running"]),
+        )
+    )
+    if submitted or team_submitted or active:
+        raise HTTPException(
+            409,
+            "Team membership is locked after submission or while a commit is running",
+        )
+
 
 def team_view(db, team):
     members = db.execute(

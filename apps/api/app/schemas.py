@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field, HttpUrl
+from typing import Optional
 
 
 class Credentials(BaseModel):
@@ -26,7 +27,7 @@ class ModelInput(BaseModel):
     description: str = Field(min_length=3, max_length=5000)
     framework: str = Field(min_length=1, max_length=80)
     license: str = Field(min_length=1, max_length=80)
-    url: HttpUrl
+    url: Optional[HttpUrl] = None
 
 
 class WorkUpdate(BaseModel):

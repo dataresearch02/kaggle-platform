@@ -158,11 +158,17 @@ def view_code(id: int, user=Depends(optional_user), db: Session = Depends(get_db
     )
     inputs = []
     for item in document.get("metadata", {}).get("arena_inputs", []):
-        dataset = db.get(Dataset, item["id"])
+        from .dataset_access import visible_datasets
+
+        dataset = db.scalar(
+            select(Dataset).where(Dataset.id == item["id"], visible_datasets(user))
+        )
         inputs.append(
             {
                 "id": item["id"],
-                "title": dataset.title if dataset else item["title"],
+                "title": (
+                    dataset.title if dataset else item.get("title", "Unavailable input")
+                ),
                 "available": dataset is not None,
                 "filename": item.get("filename", ""),
             }
@@ -290,6 +296,7 @@ def publish_code(
     store_publication(db, row, data)
     if working:
         working.private = 0
+        working.document = db.get(NotebookPublication, id).document
     db.commit()
     return {"published": True}
 
@@ -312,6 +319,13 @@ def store_publication(db, row, data):
     for item in proposed:
         if not isinstance(item, dict) or not isinstance(item.get("id"), int):
             raise HTTPException(422, "Each input needs a dataset ID")
+        from .dataset_access import visibility
+
+        if visibility(db, item["id"]) != "public":
+            raise HTTPException(
+                422,
+                "Publish attached datasets or remove their references before publishing this notebook",
+            )
         dataset = db.get(Dataset, item["id"])
         if not dataset:
             raise HTTPException(422, "Remove unavailable datasets before publishing")
@@ -331,7 +345,10 @@ def store_publication(db, row, data):
     if not publication:
         publication = NotebookPublication(notebook_id=row.id)
         db.add(publication)
+    from .notebook_versions import save_version
+
     publication.document = json.dumps(document)
+    save_version(db, row, document)
     row.code = "\n\n".join(
         "".join(cell["source"]) if isinstance(cell["source"], list) else cell["source"]
         for cell in document["cells"]

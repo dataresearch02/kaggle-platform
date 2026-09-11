@@ -81,8 +81,8 @@ def initialize_competition(db, competition):
             competition_id=competition.id,
             starts_at=details.created_at if details else None,
             prize_details=competition.prize,
-            getting_started="1. Join the competition and review the data dictionary.\n2. Download training and test data. Train and validate your model.\n3. Create a CSV with id,prediction columns.\n4. Submit on Leaderboard before the deadline; your best RMSE score counts.",
-            evaluation="Root mean squared error (RMSE). Lower scores are better. The leaderboard uses your best submission.",
+            getting_started="1. Join the competition and review the data dictionary.\n2. Download training and test data. Train and validate your model.\n3. Create a CSV with id,prediction columns.\n4. Upload predictions in Submissions before the deadline; your best score counts.",
+            evaluation=f"{competition.metric}. {'Higher' if competition.metric == 'Accuracy' else 'Lower'} scores are better. The leaderboard uses your best submission.",
             data_description="Review the file descriptions and column dictionary before training. Test labels are kept private.",
         )
     )

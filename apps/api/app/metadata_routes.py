@@ -10,6 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Form, File, UploadFile, R
 from pydantic import BaseModel, Field, HttpUrl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from .dataset_access import readable
+from .code_pages import optional_user
 from .auth import current_user
 from .db import get_db, DATA_DIR
 from .models import (
@@ -279,7 +281,10 @@ class ProfileInput(BaseModel):
 
 
 @router.get("/datasets/{id}/metadata")
-def dataset_metadata(id: int, db: Session = Depends(get_db)):
+def dataset_metadata(
+    id: int, user=Depends(optional_user), db: Session = Depends(get_db)
+):
+    readable(db, id, user)
     row = db.get(DatasetProfile, id)
     if not row:
         raise HTTPException(404, "Dataset metadata not found")
@@ -319,4 +324,4 @@ def update_dataset_metadata(
             column["description"] = data.column_descriptions[column["name"]]
     row.columns_json = json.dumps(columns)
     db.commit()
-    return dataset_metadata(id, db)
+    return dataset_metadata(id, user=user, db=db)

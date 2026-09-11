@@ -41,7 +41,7 @@ test('competition forks remain private until a fresh run produces valid predicti
     await cell.fill(code);
     await page.getByRole('button', { name: 'Save & Commit', exact: true }).click();
     await page.getByRole('button', { name: 'Run and evaluate', exact: true }).click();
-    await expect(page.locator('.commit-status')).toContainText('Evaluated · RMSE', {
+    await expect(page.locator('.commit-status')).toContainText('Evaluated · Score', {
       timeout: 90000,
     });
     expect((await codes()).map((row: { id: number }) => row.id)).toEqual([id]);

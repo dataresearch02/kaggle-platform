@@ -142,6 +142,9 @@ async def put_document(
             if not working:
                 working = NotebookWorkingCopy(notebook_id=int(id), private=0)
                 db.add(working)
+            from .notebook_versions import save_version
+
+            save_version(db, db.get(Notebook, int(id)), data.model_dump())
             working.document = json.dumps(data.model_dump())
             db.commit()
     return {"saved": True}
@@ -159,7 +162,9 @@ async def attach_input(
     """Copy a public Arena dataset to a fixed name in this user's workspace."""
     async with user_lock(user.id):
         resolve(kind, id, user, db)
-        dataset = db.get(Dataset, dataset_id)
+        from .dataset_access import readable
+
+        dataset = readable(db, dataset_id, user)
         if dataset is None:
             raise HTTPException(404, "Dataset not found")
         source = DATA_DIR / "uploads" / dataset.storage_key

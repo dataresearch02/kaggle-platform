@@ -3,7 +3,7 @@ import { api } from './api';
 
 type Commit = {
   id: number;
-  status: 'queued' | 'running' | 'failed' | 'succeeded';
+  status: 'queued' | 'running' | 'failed' | 'succeeded' | 'cancelled';
   error: string | null;
   score: number | null;
   output_filename: string;
@@ -60,11 +60,32 @@ export default function CommitNotebook({
       {job && (
         <span role="status" className="commit-status">
           {job.status === 'succeeded'
-            ? `Evaluated · RMSE ${job.score?.toFixed(5)}`
+            ? `Evaluated · Score ${job.score?.toFixed(5)}`
             : job.status === 'failed'
               ? `Commit failed: ${job.error}`
               : `Commit ${job.status}`}
         </span>
+      )}
+      {pending && (
+        <button
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              setJob(
+                await api<Commit>(`/code/${notebookId}/commits/${job.id}/cancel`, {
+                  method: 'POST',
+                }),
+              );
+            } catch (e) {
+              setError((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Cancel evaluation
+        </button>
       )}
       {job?.status === 'succeeded' && (
         <a href={`#competitions/${competitionId}/code`} onClick={close}>
@@ -96,8 +117,8 @@ export default function CommitNotebook({
         >
           <strong>Run and evaluate in competition</strong>
           <p>
-            A fresh kernel runs your saved cells from top to bottom. Read test data from{' '}
-            <code>test.csv</code> or <code>os.environ['ARENA_TEST_DATA']</code>.
+            An isolated CPU job runs your saved cells from top to bottom without network access.
+            Read test data from <code>test.csv</code> or <code>os.environ['ARENA_TEST_DATA']</code>.
           </p>
           <label>
             Prediction CSV filename

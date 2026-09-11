@@ -18,7 +18,12 @@ def create(client, title="Published experiment"):
         json={"title": title, "description": "Source description", "code": "print(42)"},
     )
     assert response.status_code == 201
-    return response.json()
+    row = response.json()
+    assert (
+        client.put(f"/api/code/{row['id']}/publication", json=document()).status_code
+        == 200
+    )
+    return row
 
 
 def register(client, username):
@@ -164,6 +169,12 @@ def test_view_and_fork_use_published_document_not_private_runtime(member, hub):
         data={"title": "Experiment input", "description": "Public example"},
         files={"file": ("input.csv", b"x\n1\n")},
     ).json()
+    assert (
+        member.put(
+            f"/api/datasets/{dataset['id']}/access", json={"visibility": "public"}
+        ).status_code
+        == 200
+    )
     doc["metadata"] = {
         "arena_inputs": [
             {"id": dataset["id"], "title": "fake title", "path": "../secret"}
@@ -211,7 +222,9 @@ def test_view_and_fork_use_published_document_not_private_runtime(member, hub):
 
 
 def test_source_fallback_and_cleanup(member):
-    row = create(member)
+    row = member.post(
+        "/api/notebooks", json={"title": "Private source", "code": "print(42)"}
+    ).json()
     id = row["id"]
     assert member.get(f"/api/code/{id}").json()["published_at"] is None
     assert member.get(f"/api/code/{id}").json()["document"]["cells"][0]["outputs"] == []
@@ -255,6 +268,12 @@ def test_notebook_comments_persist_and_enforce_ownership(member):
     notebook = member.post(
         "/api/notebooks", json={"title": "Commented code", "code": "print(1)"}
     ).json()
+    assert (
+        member.put(
+            f"/api/code/{notebook['id']}/publication", json=document()
+        ).status_code
+        == 200
+    )
     path = f"/api/code/{notebook['id']}/comments"
     assert member.post(path, json={"body": "   "}).status_code == 422
     created = member.post(path, json={"body": "Useful notebook"})

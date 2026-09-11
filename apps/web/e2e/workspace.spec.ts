@@ -271,7 +271,8 @@ test('Your work appears after creation and manages only the current users conten
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.locator('.work-row')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Create something of your own' })).toBeVisible();
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.getByRole('button', { name: 'Open user menu', exact: true }).click();
+  await page.getByRole('button', { name: 'Log out', exact: true }).click();
   await expect(page.locator('.work-row')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Your work starts here' })).toBeVisible();
 });

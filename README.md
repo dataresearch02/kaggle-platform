@@ -22,7 +22,7 @@ After you save a notebook, upload a dataset, or publish a model or challenge, **
 
 ## Integrated notebooks
 
-Arena has its own notebook editor: Python cells with syntax highlighting, Markdown previews, streamed text/errors, tables and plots. Use **Create → Notebook** for a full-screen temporary draft, or select a saved notebook and choose **Start session**. The workspace includes menus, floating cell controls, a right input/outline panel and a shared Python console. The toolbar includes Run cell, Run all, Interrupt, Restart kernel and Save. Add Input inserts a dataset loader; Upload publishes a public CSV dataset and attaches it. There is no JupyterLab iframe, file browser, terminal or Open command.
+Arena has its own notebook editor: Python cells with syntax highlighting, Markdown previews, streamed text/errors, tables and plots. Use **Create → Notebook** for a full-screen temporary draft, or select a saved notebook and choose **Start session**. The workspace includes menus, floating cell controls, a right input/outline panel and a shared Python console. The toolbar includes Run cell, Run all, Interrupt, Restart kernel and Save. Add Input inserts a dataset loader; Upload saves a private CSV dataset and attaches it. There is no JupyterLab iframe, file browser, terminal or Open command.
 
 JupyterHub runs behind the API to provision a separate scientific Python container per user. The browser only calls notebook-scoped Arena endpoints; direct `/jupyter/` URLs return 404. Python code runs in notebook containers, never in the web API. HTML outputs are sanitized and Markdown does not execute embedded HTML or scripts.
 
@@ -62,7 +62,7 @@ Open **http://localhost:5173**. Vite proxies `/api` to FastAPI. This standalone 
 
 Open the **Create** dropdown in the sidebar to choose **Notebook**, **Competition**, **Dataset**, or **Benchmark**. Each section also has its own creation button. **Notebook** opens the full-screen Arena editor immediately with a temporary draft. Name it and click **Save** (or press Ctrl/Cmd+S) to create a permanent notebook with its saved outputs. Closing without Save discards the draft. Other creation options slide in from the right over the selected collection. The panel occupies the right half of the desktop viewport and the full width on smaller screens, with file uploads and metadata fields. Drag a CSV onto the upload area or browse for a file, review its name and size, then publish. Sign in before publishing.
 
-Competitions require a future closing date; benchmarks stay open. Both accept a public UTF-8 test CSV (up to 10 MB, unique `id` plus feature columns) and a private answer CSV (up to 1 MB, exactly `id,prediction`, matching IDs). Participants download test data and a sample submission, join, then upload predictions for automatic RMSE scoring and a leaderboard. Lower RMSE is better. Include the task instructions and training-data links in the description. Evaluation data is fixed after publication. This benchmark feature evaluates prediction CSVs; hardware timing and automatic model execution are not included.
+Competitions require a future closing date; benchmarks stay open. Both accept a public UTF-8 test CSV (up to 10 MB, unique `id` plus feature columns) and a private answer CSV (up to 1 MB, exactly `id,prediction`, matching IDs). Participants download test data and a sample submission, join, then upload predictions for automatic scoring and a leaderboard. Choose RMSE, MAE, Accuracy or binary LogLoss; only Accuracy ranks higher scores first. Include the task instructions and training-data links in the description. Evaluation data is fixed after publication. This benchmark feature evaluates prediction CSVs; hardware timing and automatic model execution are not included.
 
 Creator metadata, test data, answers and scores persist in PostgreSQL. A new `challenge_details` table extends existing competition records without rewriting them; the seeded competition continues to work.
 
@@ -87,7 +87,7 @@ apps/
       db.py            SQLite / PostgreSQL connection and storage configuration
       models.py        Relational data model
       schemas.py       Request validation
-      scoring.py       Strict prediction validation and RMSE calculation
+      scoring.py       Strict prediction validation and metric calculation
       notebook_runtime.py  Hub lifecycle, first-open import and private export
       seed.py          Synthetic starter datasets, challenge, courses and notebook
     tests/             API workflow, access control and scoring tests
@@ -140,14 +140,14 @@ The API also exposes `/api/health`. POST/PUT requests require `X-Arena-Client: w
 
 ## Current boundaries
 
-- CSV uploads are public, limited to 10 MB, and stored on a local persistent volume. Search returns at most 100 entries.
-- The seeded educational competition uses synchronous RMSE scoring and a single public leaderboard. It is not a prize competition engine; Private leaderboards, teams, and anti-cheating controls are planned. Community members can publish RMSE competitions with their own test data and private answers, or ongoing benchmarks without deadlines.
-- Notebooks use the native Arena editor with JupyterHub as backend infrastructure, per-user containers, persistent working copies, kernel controls and output export. Code executes in notebook containers, never in the API. GPU execution, job queues, collaboration and automatic dataset mounting remain future work.
-- Model cards contain metadata and external reference links. Artifact hosting, training job orchestration, GPU scheduling, and inference are not implemented yet. Interactive CPU experiments run in the Arena editor.
+- New datasets and notebooks are private by default, with explicit visibility and sharing controls. Notebook history stores immutable saves and supports restoration into the editor. Catalog search returns at most 100 entries.
+- Competitions support RMSE, MAE, Accuracy and binary LogLoss, team-owned submissions and a public leaderboard. Private leaderboards, submission limits, final selection and anti-cheating controls remain incomplete.
+- Interactive notebooks use the native Arena editor and per-user Jupyter containers. Compose evaluates competition commits through a separate CPU worker with disposable offline containers, cancellation, resource limits and restart recovery. GPU support is deferred.
+- Dataset and model details support immutable additional file versions and downloads (10 MB per file). Model cards can contain hosted files and optional external links. Pinned notebook inputs, large artifact storage and hosted inference remain incomplete.
 - Courses contain lessons and per-user completion tracking; exercises are not automatically graded.
 - Accounts, public discussions and replies are implemented. Email verification, password recovery, OAuth, roles, moderation, quotas, and rate limiting remain future work.
 - Schema creation and starter seeding run at startup for the first milestone. Use one API process; schema migrations and coordinated bootstrap are required before scaling.
-- The container runtime is intended for a trusted local community. The native editor sanitizes outputs and blocks direct Jupyter UI access; runtime network isolation and resource quotas still need hardening before accepting hostile workloads. The Hub alone mounts the container-runtime socket. Compose binds published ports to loopback. Public deployment needs HTTPS, secure cookies (`COOKIE_SECURE=true`), explicit origins, managed secrets, migrations, backups, upload policy, abuse controls, and isolated compute.
+- The container runtime is intended for a trusted local community. The native editor sanitizes outputs and blocks direct Jupyter UI access; runtime network isolation and resource quotas still need hardening before accepting hostile workloads. The Hub and the trusted evaluation broker mount the container-runtime socket; the API and evaluation job containers do not. Compose binds published ports to loopback. Public deployment needs HTTPS, secure cookies (`COOKIE_SECURE=true`), explicit origins, managed secrets, migrations, backups, upload policy, abuse controls, and isolated compute.
 
 See [architecture](docs/architecture.md) and the [feature roadmap](docs/roadmap.md) for the planned system.
 
@@ -166,7 +166,7 @@ Run `make format` to format the project, or `make format-check` to verify format
 
 ## Competition pages
 
-Competition cards open full pages at `#competitions/<id>/overview`. Overview, Data, Code, Models, Discussion, Leaderboard, Rules, Team and Submissions have shareable tab URLs and support browser back/forward navigation. The header provides Join competition and shows membership or closed status. Data previews public features only and offers test/sample CSV downloads. Leaderboard displays participants’ best scores. Submissions contains prediction uploads and the signed-in user's latest 100 scored submissions, including timestamps. Team supports creating a team, joining by invite code, listing members and leaving. Team membership persists in PostgreSQL; scores remain individual. Team changes close at the competition deadline.
+Competition cards open full pages at `#competitions/<id>/overview`. Overview, Data, Code, Models, Discussion, Leaderboard, Rules, Team and Submissions have shareable tab URLs and support browser back/forward navigation. The header provides Join competition and shows membership or closed status. Data previews public features only and offers test/sample CSV downloads. Leaderboard displays participants’ best scores. Submissions contains prediction uploads and the signed-in user's latest 100 scored submissions, including timestamps. Team supports creating a team, joining by invite code, listing members and leaving. Team membership and submission attribution persist in PostgreSQL. Team scores aggregate on the leaderboard. Membership changes lock after submissions or pending evaluations, and close at the competition deadline.
 
 Creators can link their published Codes and model cards to a competition. These tabs show linked resources, not unrelated community content. Discussion posts are stored per competition. Rules describe the current enforced submission format, size, deadline and scoring behavior; organizer-specific rule editing is not implemented. Competition deletion removes its resource links and discussion posts while retaining the independently published notebooks and model cards.
 
@@ -194,3 +194,12 @@ The event list is private to the signed-in user; synchronous uploads and future
 scheduling features are not represented as background jobs.
 
 See the [main workflow review](docs/logic-review.md) for verified behavior, fixes found during the review, and remaining functional limits.
+
+See [local CPU execution and persistent work](docs/local-cpu.md) for the new privacy, history, artifact storage and evaluation behavior, including current limits.
+
+### Account management
+
+Use the avatar in the header to open the account drawer. Profile/photo editing,
+groups, expiring CLI API tokens, visibility/password settings, logout and persistent
+service notifications are implemented. See [the account guide](docs/accounts.md)
+for routes, permissions and operator notification commands.

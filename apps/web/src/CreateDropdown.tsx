@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useId, useRef, useState } from 'react';
 import { ChevronDown, Code2, Database, FlaskConical, Plus, Trophy } from 'lucide-react';
 
 const options = [
@@ -18,10 +18,48 @@ const options = [
   },
 ];
 
-export default function CreateDropdown({ onSelect }: { onSelect: (id: string) => void }) {
+export default function CreateDropdown({
+  onSelect,
+  disabled = false,
+}: {
+  onSelect: (id: string) => void;
+  disabled?: boolean;
+}) {
+  const menuId = useId();
+  const menu = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ left: 0, top: 0 });
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (!open) {
+      menu.current?.hidePopover();
+      return;
+    }
+    const place = () => {
+      const rect = trigger.current!.getBoundingClientRect();
+      const height = menu.current!.offsetHeight;
+      const width = menu.current!.offsetWidth;
+      setPosition({
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+        top:
+          rect.bottom + 6 + height <= window.innerHeight - 8
+            ? rect.bottom + 6
+            : Math.max(8, rect.top - height - 6),
+      });
+    };
+    menu.current?.showPopover();
+    place();
+    const scroll = (event: Event) => {
+      if (!menu.current?.contains(event.target as Node)) place();
+    };
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', scroll, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', scroll, true);
+    };
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     root.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
@@ -40,6 +78,8 @@ export default function CreateDropdown({ onSelect }: { onSelect: (id: string) =>
       }}
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
           setOpen(false);
           trigger.current?.focus();
         }
@@ -61,37 +101,45 @@ export default function CreateDropdown({ onSelect }: { onSelect: (id: string) =>
     >
       <button
         ref={trigger}
+        disabled={disabled}
         className="create-button"
         aria-label="Create"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-controls="create-menu"
+        aria-controls={menuId}
         onClick={() => setOpen(!open)}
       >
         <Plus size={20} /> Create <ChevronDown size={16} />
       </button>
-      {open && (
-        <div id="create-menu" className="create-menu" role="menu" aria-label="Create category">
-          <div className="create-menu-label">CREATE SOMETHING NEW</div>
-          {options.map(({ id, title, hint, icon: Icon }) => (
-            <button
-              key={id}
-              role="menuitem"
-              aria-label={title}
-              onClick={() => {
-                setOpen(false);
-                onSelect(id);
-              }}
-            >
-              <Icon size={21} />
-              <span>
-                <strong>{title}</strong>
-                <small>{hint}</small>
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
+      <div
+        ref={menu}
+        id={menuId}
+        popover="auto"
+        className="create-menu"
+        role="menu"
+        aria-label="Create category"
+        style={position}
+        onToggle={(event) => setOpen((event.nativeEvent as ToggleEvent).newState === 'open')}
+      >
+        <div className="create-menu-label">CREATE SOMETHING NEW</div>
+        {options.map(({ id, title, hint, icon: Icon }) => (
+          <button
+            key={id}
+            role="menuitem"
+            aria-label={title}
+            onClick={() => {
+              setOpen(false);
+              onSelect(id);
+            }}
+          >
+            <Icon size={21} />
+            <span>
+              <strong>{title}</strong>
+              <small>{hint}</small>
+            </span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

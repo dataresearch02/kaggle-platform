@@ -200,3 +200,16 @@ def test_mutations_require_login(client):
     )
     assert client.post("/api/competitions/1/join").status_code == 401
     assert client.get("/api/competitions/999").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "metric,expected", [("RMSE", 1.0), ("MAE", 1.0), ("Accuracy", 0.0)]
+)
+def test_selectable_metrics(metric, expected):
+    assert score_csv(b"id,prediction\na,2\nb,4\n", {"a": 1, "b": 3}, metric) == expected
+
+
+def test_binary_log_loss_checks_probabilities():
+    assert score_csv(b"id,prediction\na,1\nb,0\n", {"a": 1, "b": 0}, "LogLoss") == 0
+    with pytest.raises(ValueError):
+        score_csv(b"id,prediction\na,2\n", {"a": 1}, "LogLoss")

@@ -256,3 +256,31 @@ def test_runner_waits_for_shell_and_iopub_before_executing(monkeypatch):
     )
     assert outputs[0]["text"] == "ready\n" and count == 1
     assert socket.executions == 1
+
+
+def test_cancelled_commit_never_publishes(member, commit_db):
+    fork = member.post("/api/code/1/fork?competition_id=1").json()["id"]
+    path = f"/api/code/{fork}"
+    member.post("/api/competitions/1/join")
+    job = member.post(path + "/commits", json={"competition_id": 1}).json()
+    with commit_db() as db:
+        row = db.get(NotebookCommit, job["id"])
+        row.status = "running"
+        db.commit()
+    cancelled = member.post(f"{path}/commits/{job['id']}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    document = member.get(path).json()["document"]
+    notebook_commits.complete_commit(
+        job["id"], document, b"id,prediction\n7,240\n8,100\n9,300\n"
+    )
+    assert member.get(path).json()["private"] is True
+    assert (
+        member.get("/api/code?competition_id=1&filter=your-work").json()["items"] == []
+    )
+    member.post("/api/auth/logout")
+    member.post(
+        "/api/auth/register",
+        json={"username": "other", "password": "good-password-123"},
+    )
+    assert member.post(f"{path}/commits/{job['id']}/cancel").status_code == 404

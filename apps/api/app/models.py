@@ -342,3 +342,103 @@ class CompetitionTeamMember(Base):
     )
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(String, default=now)
+
+
+class NotebookVersion(Base):
+    """Immutable saved notebook history, separate from the public snapshot."""
+
+    __tablename__ = "notebook_versions"
+    id = Column(Integer, primary_key=True)
+    notebook_id = Column(
+        Integer, ForeignKey("notebooks.id"), nullable=False, index=True
+    )
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    document = Column(Text, nullable=False)
+    created_at = Column(String, default=now)
+
+
+class DatasetAccess(Base):
+    __tablename__ = "dataset_access"
+    dataset_id = Column(Integer, ForeignKey("datasets.id"), primary_key=True)
+    visibility = Column(String(10), nullable=False, default="private")
+
+
+class DatasetShare(Base):
+    __tablename__ = "dataset_shares"
+    dataset_id = Column(Integer, ForeignKey("datasets.id"), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+
+
+class SubmissionTeam(Base):
+    """Team ownership fixed when predictions are submitted."""
+
+    __tablename__ = "submission_teams"
+    submission_id = Column(Integer, ForeignKey("submissions.id"), primary_key=True)
+    team_id = Column(
+        Integer, ForeignKey("competition_teams.id"), nullable=False, index=True
+    )
+
+
+class ArtifactVersion(Base):
+    __tablename__ = "artifact_versions"
+    id = Column(Integer, primary_key=True)
+    kind = Column(String(20), nullable=False, index=True)
+    resource_id = Column(Integer, nullable=False, index=True)
+    path = Column(String(240), nullable=False)
+    storage_key = Column(String(80), nullable=False, unique=True)
+    size = Column(Integer, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    created_at = Column(String, default=now)
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    details = Column(Text, nullable=False, default="{}")
+    avatar = Column(Text, nullable=False, default="")
+    avatar_type = Column(String(30), nullable=False, default="")
+    visibility = Column(String(20), nullable=False, default="public")
+
+
+class ApiToken(Base):
+    __tablename__ = "api_tokens"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(80), nullable=False)
+    token_hash = Column(String(64), nullable=False, unique=True)
+    prefix = Column(String(20), nullable=False)
+    scope = Column(String(20), nullable=False)
+    expires_at = Column(Float, nullable=False)
+    created_at = Column(String, default=now)
+    last_used_at = Column(String, nullable=True)
+
+
+class UserGroup(Base):
+    __tablename__ = "user_groups"
+    id = Column(Integer, primary_key=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name = Column(String(80), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    invite_code = Column(String(80), nullable=False, unique=True)
+    created_at = Column(String, default=now)
+
+
+class GroupMember(Base):
+    __tablename__ = "group_members"
+    group_id = Column(Integer, ForeignKey("user_groups.id"), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+
+
+class ServiceNotice(Base):
+    __tablename__ = "service_notices"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    title = Column(String(160), nullable=False)
+    body = Column(Text, nullable=False)
+    created_at = Column(String, default=now)
+
+
+class NoticeRead(Base):
+    __tablename__ = "notice_reads"
+    notice_id = Column(Integer, ForeignKey("service_notices.id"), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)

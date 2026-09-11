@@ -49,6 +49,34 @@ def new_session(db, user, response):
 
 
 def current_user(request: Request, db: DBSession = Depends(get_db)):
+    authorization = request.headers.get("authorization")
+    if authorization:
+        from sqlalchemy import select
+        from .models import ApiToken, now
+
+        scheme, _, secret = authorization.partition(" ")
+        credential = (
+            db.scalar(
+                select(ApiToken).where(
+                    ApiToken.token_hash == hashlib.sha256(secret.encode()).hexdigest()
+                )
+            )
+            if scheme.lower() == "bearer" and secret
+            else None
+        )
+        if not credential or credential.expires_at <= time.time():
+            raise HTTPException(401, "API token is invalid or expired")
+        if (
+            request.method not in {"GET", "HEAD", "OPTIONS"}
+            and credential.scope != "read-write"
+        ):
+            raise HTTPException(403, "This API token is read-only")
+        user = db.get(User, credential.user_id)
+        if not user:
+            raise HTTPException(401, "API token owner no longer exists")
+        credential.last_used_at = now()
+        db.commit()
+        return user
     token = request.cookies.get(COOKIE)
     session = (
         db.get(Session, hashlib.sha256(token.encode()).hexdigest()) if token else None

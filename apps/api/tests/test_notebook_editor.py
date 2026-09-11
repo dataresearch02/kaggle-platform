@@ -152,6 +152,12 @@ def test_dataset_inputs_copy_bytes_to_user_workspace(member, hub):
         files={"file": ("sample.csv", b"x,y\n1,2\n", "text/csv")},
     ).json()
     dataset_id = uploaded["id"]
+    assert (
+        member.put(
+            f"/api/datasets/{dataset_id}/access", json={"visibility": "public"}
+        ).status_code
+        == 200
+    )
     response = member.post(f"/api/editor/notebooks/1/inputs/{dataset_id}")
     assert response.status_code == 200
     path = response.json()["path"]

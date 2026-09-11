@@ -1,3 +1,5 @@
+import DatasetAccess from './DatasetAccess';
+import ArtifactFiles from './ArtifactFiles';
 import { useEffect, useState } from 'react';
 import { api } from './api';
 type Metadata = {
@@ -36,6 +38,8 @@ export default function DatasetMetadata({ id, owner }: { id: number; owner: bool
     );
   return (
     <section>
+      {owner && <DatasetAccess id={id} />}
+      <ArtifactFiles kind="datasets" id={id} owner={owner} />
       <div className="metadata-heading">
         <h3>Dataset documentation</h3>
         {owner && (

@@ -37,6 +37,10 @@ test('published code forks with inputs into an isolated editor and retains outpu
         data: { title: `Published input experiment ${Date.now()}`, code: 'print(42)' },
       })
     ).json();
+    await page.request.put(`/api/datasets/${dataset.id}/access`, {
+      headers,
+      data: { visibility: 'public' },
+    });
     const source = `import pandas as pd\nfrom IPython.display import display\ndf = pd.read_csv('arena-input-${dataset.id}.csv')\nprint('INPUT_SUM', df['value'].sum())\ndisplay(df)`;
     expect(
       (
@@ -70,6 +74,13 @@ test('published code forks with inputs into an isolated editor and retains outpu
       timeout: 60000,
     });
     await page.getByRole('button', { name: 'Publish code and outputs', exact: true }).click();
+    await page.getByRole('button', { name: 'Version history', exact: true }).click();
+    const history = page.getByRole('dialog', { name: 'Notebook version history' });
+    await expect(history.locator('.history-version').first()).toBeVisible();
+    await history.locator('.history-version').last().click();
+    page.once('dialog', (dialog) => dialog.accept());
+    await history.getByRole('button', { name: 'Restore into editor' }).click();
+    await expect(page.locator('.arena-cell .cm-content')).toHaveText('print(42)');
     await page.getByRole('link', { name: 'View published code', exact: true }).click();
     await expect(page.getByLabel('Published output cell 2')).toContainText('INPUT_SUM 42');
     await expect(page.getByRole('button', { name: 'Run all', exact: true })).toHaveCount(0);

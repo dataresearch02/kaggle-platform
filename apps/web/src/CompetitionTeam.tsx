@@ -67,8 +67,9 @@ export default function CompetitionTeam({
     <section className="competition-team">
       <h2>Team</h2>
       <p>
-        Create a team or join teammates using their invite code. Submission scores and leaderboard
-        positions belong to individual participants.
+        Create a team or join teammates using their invite code. Predictions submitted by members
+        count toward the team leaderboard. Choose your team before submitting; membership changes
+        are locked after submission.
       </p>
       {error && <p role="alert">{error}</p>}
       {loading ? (

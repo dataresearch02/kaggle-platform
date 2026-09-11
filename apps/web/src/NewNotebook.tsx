@@ -80,7 +80,7 @@ export default function NewNotebook({
       setSaving(false);
     }
   }
-  async function dismiss(destination?: Page) {
+  async function dismiss(destination?: Page, create = false) {
     if (saving || closing) return;
     // Unmount the editor and cancel execution before discarding the temporary file.
     setClosing(true);
@@ -93,6 +93,11 @@ export default function NewNotebook({
       close();
     }
     if (destination) window.location.hash = destination;
+    if (create)
+      setTimeout(
+        () => window.dispatchEvent(new CustomEvent('arena-create', { detail: destination })),
+        0,
+      );
   }
   return (
     <dialog
@@ -116,7 +121,8 @@ export default function NewNotebook({
           title={title}
           onTitleChange={setTitle}
           onClose={() => void dismiss()}
-          onNavigate={(page) => void dismiss(page)}
+          onNavigate={(page, create) => void dismiss(page, create)}
+          canPublish
           permanent={permanent}
           notebookId={savedNotebookId}
           competitionId={competitionId}

@@ -9,6 +9,14 @@ def test_replies_and_reactions_are_persistent_scoped_and_owned(member, kind):
         notebook = member.post(
             "/api/notebooks", json={"title": "Threaded code", "code": "print(1)"}
         ).json()
+        from test_code_pages import document
+
+        assert (
+            member.put(
+                f"/api/code/{notebook['id']}/publication", json=document()
+            ).status_code
+            == 200
+        )
         target = member.post(
             f"/api/code/{notebook['id']}/comments", json={"body": "Original comment"}
         ).json()

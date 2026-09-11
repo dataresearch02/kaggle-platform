@@ -1,25 +1,25 @@
-import ActiveEvents from './ActiveEvents';
+import AccountMenu from './AccountMenu';
+import AccountPage, { accountRouteFromHash } from './AccountPage';
+import Sidebar from './Sidebar';
 import Engagement from './Engagement';
 import { nav, dataHubPages, morePages, type Page } from './navigation';
 import CodePage from './CodePage';
 import CodeList from './CodeList';
 import DatasetMetadata from './DatasetMetadata';
+import ArtifactFiles from './ArtifactFiles';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   ArrowRight,
   BookOpen,
   Check,
   ChevronRight,
-  ChevronDown,
   Code2,
   Database,
   Download,
   FlaskConical,
   GraduationCap,
   Layers3,
-  LogOut,
   Menu,
-  Ellipsis,
   Plus,
   Search,
   Sparkles,
@@ -30,7 +30,6 @@ import { api, type Item, type User } from './api';
 import NotebookWorkspace from './NotebookWorkspace';
 import CreatePage from './CreatePage';
 import NewNotebook from './NewNotebook';
-import CreateDropdown from './CreateDropdown';
 import CompetitionPage, { competitionTabs, type CompetitionTab } from './CompetitionPage';
 import YourWork, { type WorkItem, type WorkKind } from './YourWork';
 
@@ -131,6 +130,8 @@ function competitionRouteFromHash() {
 }
 
 export default function App() {
+  const [accountRoute, setAccountRoute] = useState(accountRouteFromHash);
+  const [accountRevision, setAccountRevision] = useState(0);
   const [page, setPage] = useState<Page>(() => {
     const p = location.hash.slice(1);
     return codeRouteFromHash()
@@ -213,6 +214,16 @@ export default function App() {
       .then(setUser)
       .catch(() => {});
     const handler = () => {
+      const account = accountRouteFromHash();
+      setAccountRoute(account);
+      if (account) {
+        setCodeRoute(null);
+        setCompetitionRoute(null);
+        setSelected(null);
+        setCreating(false);
+        setMobile(false);
+        return;
+      }
       const code = codeRouteFromHash();
       setCodeRoute(code);
       if (code) {
@@ -308,7 +319,22 @@ export default function App() {
     }
   }, [notice]);
 
+  function createWork(target: Page) {
+    go(target);
+    if (user) setCreating(true);
+    else {
+      setPendingCreate(true);
+      setAuth('register');
+    }
+  }
+  useEffect(() => {
+    const handler = (event: Event) => createWork((event as CustomEvent<Page>).detail);
+    window.addEventListener('arena-create', handler);
+    return () => window.removeEventListener('arena-create', handler);
+  }, [user]);
+
   function go(next: Page) {
+    setAccountRoute(null);
     setCodeRoute(null);
     setCompetitionRoute(null);
     setCompetitionStatus('all');
@@ -351,132 +377,25 @@ export default function App() {
     }
   }
 
-  function navigationItem(item: (typeof nav)[number]) {
-    return (
-      <button
-        key={item.id}
-        className={page === item.id ? 'active' : ''}
-        aria-label={item.label}
-        title={item.label}
-        aria-current={page === item.id ? 'page' : undefined}
-        onClick={() => {
-          if (item.id === 'work') setWorkFilter('all');
-          go(item.id);
-        }}
-      >
-        <item.icon size={19} />
-        <span className="navigation-label">{item.label}</span>
-      </button>
-    );
-  }
-
   return (
     <div className={`app ${compact ? 'compact-navigation' : ''}`}>
-      <aside className={`sidebar ${mobile ? 'visible' : ''}`}>
-        <div className="sidebar-header">
-          <button
-            className="navigation-toggle"
-            aria-label={compact ? 'Expand navigation' : 'Collapse navigation'}
-            title={compact ? 'Expand navigation' : 'Collapse navigation'}
-            aria-expanded={!compact}
-            onClick={() => {
-              setCompact(!compact);
-              setDataHubOpen(compact);
-              setMoreOpen(compact);
-            }}
-          >
-            <Menu size={21} />
-          </button>
-          <button
-            className="brand"
-            aria-label="Arena home"
-            hidden={compact}
-            onClick={() => go('home')}
-          >
-            <span className="brand-symbol">
-              a<span />
-            </span>
-            <span className="navigation-label">
-              arena<span className="brand-dot">.</span>
-            </span>
-          </button>
-        </div>
-        <CreateDropdown
-          onSelect={(target) => {
-            go(target as Page);
-            if (user) setCreating(true);
-            else {
-              setPendingCreate(true);
-              setAuth('register');
-            }
-          }}
-        />
-        <nav aria-label="Main navigation">
-          {nav
-            .filter((item) => ['home', 'competitions', 'benchmarks'].includes(item.id))
-            .map(navigationItem)}
-          <div className="data-hub-group">
-            <button
-              className={`data-hub-toggle ${dataHubPages.includes(page) ? 'selected' : ''}`}
-              aria-label="Data Hub"
-              title="Data Hub"
-              aria-expanded={dataHubOpen}
-              aria-controls="data-hub-navigation"
-              onClick={() => setDataHubOpen(!dataHubOpen)}
-            >
-              <Database size={19} />
-              <span className="navigation-label">Data Hub</span>
-              <ChevronDown size={16} className={dataHubOpen ? 'expanded' : ''} />
-            </button>
-            <div
-              id="data-hub-navigation"
-              className="data-hub-items"
-              role="group"
-              aria-label="Data Hub"
-              hidden={!dataHubOpen}
-            >
-              {nav.filter((item) => dataHubPages.includes(item.id)).map(navigationItem)}
-            </div>
-          </div>
-          <div className="more-navigation">
-            <button
-              type="button"
-              aria-label="More"
-              aria-expanded={moreOpen}
-              onClick={() => setMoreOpen(!moreOpen)}
-            >
-              <Ellipsis size={20} />
-              <span className="navigation-label">More</span>
-              <ChevronDown size={16} className="navigation-label" />
-            </button>
-            <div
-              className="more-navigation-items"
-              role="group"
-              aria-label="More"
-              hidden={!moreOpen}
-            >
-              {nav.filter((item) => morePages.includes(item.id)).map(navigationItem)}
-            </div>
-          </div>
-          {user && hasWork && (
-            <div className="your-work-navigation">
-              {navigationItem(nav.find((item) => item.id === 'work')!)}
-            </div>
-          )}
-        </nav>
-        <ActiveEvents
-          compact={compact}
-          signedIn={!!user}
-          create={(target) => {
-            go(target);
-            if (user) setCreating(true);
-            else {
-              setPendingCreate(true);
-              setAuth('register');
-            }
-          }}
-        />
-      </aside>
+      <Sidebar
+        page={page}
+        compact={compact}
+        toggle={() => setCompact(!compact)}
+        dataHubOpen={dataHubOpen}
+        setDataHubOpen={setDataHubOpen}
+        moreOpen={moreOpen}
+        setMoreOpen={setMoreOpen}
+        signedIn={!!user}
+        hasWork={hasWork}
+        className={mobile ? 'visible' : ''}
+        navigate={(target) => {
+          if (target === 'work') setWorkFilter('all');
+          go(target);
+        }}
+        create={createWork}
+      />
       <div className="main-shell">
         <header className="topbar">
           <button
@@ -488,29 +407,32 @@ export default function App() {
           </button>
           <div className="breadcrumb">
             {dataHubPages.includes(page) ? 'Data Hub' : 'Workspace'} <ChevronRight size={14} />
-            <span>{nav.find((n) => n.id === page)?.label}</span>
+            <span>{accountRoute ? 'Your account' : nav.find((n) => n.id === page)?.label}</span>
           </div>
           <div className="account">
             {user ? (
-              <>
-                <span className="avatar">{user.username[0].toUpperCase()}</span>
-                <span>{user.username}</span>
-                <button
-                  className="icon-button"
-                  title="Sign out"
-                  onClick={() =>
-                    api('/auth/logout', { method: 'POST' })
-                      .then(() => {
-                        setUser(null);
-                        setSelected(null);
-                        changed('Signed out');
-                      })
-                      .catch((e) => setNotice(e.message))
+              <AccountMenu
+                user={user}
+                revision={accountRevision}
+                navigate={(path) => {
+                  if (path === 'work') {
+                    setWorkFilter('all');
+                    go('work');
+                  } else {
+                    setAccountRoute(path);
+                    setCodeRoute(null);
+                    setCompetitionRoute(null);
+                    setCreating(false);
+                    setSelected(null);
+                    location.hash = path;
                   }
-                >
-                  <LogOut size={17} />
-                </button>
-              </>
+                }}
+                logout={() => {
+                  setUser(null);
+                  setSelected(null);
+                  changed('Signed out');
+                }}
+              />
             ) : (
               <>
                 <button className="text-button" onClick={() => setAuth('login')}>
@@ -524,7 +446,15 @@ export default function App() {
           </div>
         </header>
         <main>
-          {codeRoute ? (
+          {accountRoute ? (
+            <AccountPage
+              key={`${accountRoute}-${user?.id}`}
+              route={accountRoute}
+              user={user}
+              updated={() => setAccountRevision((value) => value + 1)}
+              signIn={() => setAuth('login')}
+            />
+          ) : codeRoute ? (
             <CodePage
               key={`${codeRoute.id}-${codeRoute.edit}-${user?.id}`}
               id={codeRoute.id}
@@ -1480,13 +1410,12 @@ function Detail({
             <span>{item.framework}</span>
             <span>{item.license}</span>
           </div>
-          <p className="info">
-            This is a model reference card. Hosted inference and model artifact storage are planned
-            for a later milestone.
-          </p>
-          <a className="button" href={item.url} target="_blank" rel="noreferrer">
-            Visit model reference ↗
-          </a>
+          <ArtifactFiles kind="models" id={item.id} owner={!!user && item.owner_id === user.id} />
+          {item.url && (
+            <a className="button" href={item.url} target="_blank" rel="noreferrer">
+              Visit model reference ↗
+            </a>
+          )}
         </>
       )}
       {error && (

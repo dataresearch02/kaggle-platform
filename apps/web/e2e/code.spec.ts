@@ -96,6 +96,10 @@ test('published viewer renders markdown, inputs and safe saved outputs without a
       },
     })
   ).json();
+  await page.request.put(`/api/datasets/${dataset.id}/access`, {
+    headers,
+    data: { visibility: 'public' },
+  });
   const created = await (
     await page.request.post('/api/notebooks', {
       headers,

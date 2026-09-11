@@ -1,5 +1,8 @@
 # Main workflow review
 
+This review records the earlier baseline. For subsequent privacy, team scoring,
+artifact and isolated worker changes, see [the local CPU guide](local-cpu.md).
+
 Review date: 2026-09-10. Scope: the current local container product and the workflows
 requested in this project. This is a functional review, not certification of
 Kaggle feature parity or a production security audit.

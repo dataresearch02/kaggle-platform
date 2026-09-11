@@ -13,6 +13,8 @@ from .notebook_runtime import get_hub, hub_username
 async def remove_work_file(task, db, hub=None):
     if task.kind == "upload":
         (DATA_DIR / "uploads" / task.path).unlink(missing_ok=True)
+    elif task.kind == "artifact":
+        (DATA_DIR / "artifacts" / task.path).unlink(missing_ok=True)
     else:
         user = db.get(User, task.owner_id)
         hub = hub or get_hub()

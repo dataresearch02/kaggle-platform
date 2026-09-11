@@ -43,6 +43,7 @@ export default function CreatePage({
     setBusy(true);
     setError('');
     const f = new FormData(e.currentTarget);
+    if (page === 'models' && !f.get('url')) f.delete('url');
     if (page === 'competitions' && f.get('deadline')) {
       f.set('deadline', new Date(String(f.get('deadline'))).toISOString());
     }
@@ -120,7 +121,7 @@ export default function CreatePage({
                   name="file"
                   label="CSV file"
                   maxMB={10}
-                  hint="UTF-8 CSV with unique column names and at least one data row."
+                  hint="Saved privately. Use dataset visibility settings to publish or invite readers. UTF-8 CSV with unique column names and at least one data row."
                 />
               )}
               <h2>Details</h2>
@@ -149,9 +150,18 @@ export default function CreatePage({
               {(page === 'competitions' || page === 'benchmarks') && (
                 <>
                   <p className="muted">
-                    RMSE scoring: lower is better. Test data is public; answers are kept private.
-                    Published evaluation data cannot be changed.
+                    Select a scoring metric. Test features are available to participants; answers
+                    stay private. Published evaluation data cannot be changed.
                   </p>
+                  <label>
+                    Evaluation metric
+                    <select name="metric" defaultValue="RMSE">
+                      <option value="RMSE">RMSE — lower is better</option>
+                      <option value="MAE">MAE — lower is better</option>
+                      <option value="Accuracy">Accuracy — higher is better</option>
+                      <option value="LogLoss">Binary log loss — lower is better</option>
+                    </select>
+                  </label>
                   <label>
                     Category
                     <input name="category" defaultValue="Regression" required maxLength={80} />
@@ -201,10 +211,10 @@ export default function CreatePage({
                     />
                   </label>
                   <label>
-                    Model or documentation URL
-                    <input name="url" type="url" placeholder="https://…" required />
+                    Model or documentation URL (optional)
+                    <input name="url" type="url" placeholder="https://…" />
                   </label>
-                  <small>This publishes metadata and a link, not a hosted model.</small>
+                  <small>Create the card, then upload versioned files from its details page.</small>
                 </>
               )}
               {page === 'notebooks' && (

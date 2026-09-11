@@ -160,7 +160,9 @@ export default function CodePage({
       </a>
       <header className="code-view-header">
         <div>
-          <div className="eyebrow">Published notebook · read only</div>
+          <div className="eyebrow">
+            {data.private ? 'Private notebook' : 'Published notebook'} · read only
+          </div>
           <h1>{data.title}</h1>
           <p>
             By {data.owner}
@@ -246,12 +248,37 @@ export default function CodePage({
         </p>
       )}
       {notice && <p role="status">{notice}</p>}
+      {owner && (
+        <button
+          className="button secondary"
+          onClick={async () => {
+            try {
+              const value = await api<{ private: boolean }>(`/code/${id}/visibility`, {
+                method: 'PUT',
+                body: JSON.stringify({ visibility: data.private ? 'public' : 'private' }),
+              });
+              setData({ ...data, private: value.private });
+              setNotice(
+                value.private
+                  ? 'Notebook is private. Invited users retain read access.'
+                  : 'Published snapshot is public.',
+              );
+              changed();
+            } catch (e) {
+              setError((e as Error).message);
+            }
+          }}
+        >
+          {data.private ? 'Make published snapshot public' : 'Make notebook private'}
+        </button>
+      )}
+
       {sharing && owner && (
         <section className="code-sharing">
           <h2>Share with a user</h2>
           <p>
-            This published notebook is public. Sharing adds it to the recipient’s Shared with you
-            filter.
+            Sharing grants read access and adds this notebook to the recipient’s Shared with you
+            filter. You can revoke access below.
           </p>
           <form
             onSubmit={async (event) => {

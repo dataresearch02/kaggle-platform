@@ -94,3 +94,31 @@ def test_closed_and_deleted_competition_teams(member):
     )
     assert member.delete(f"/api/work/competitions/{competition}").status_code == 204
     assert member.get(base + "/team").status_code == 404
+
+
+def test_team_submission_history_and_locked_membership(member):
+    competition = publish(member).json()["id"]
+    base = f"/api/competitions/{competition}"
+    member.post(base + "/join")
+    team = member.post(base + "/team", json={"name": "Scoring team"}).json()
+    response = member.post(
+        base + "/submissions", files={"file": ("p.csv", b"id,prediction\na,1\nb,2\n")}
+    )
+    assert response.status_code == 201, response.text
+    board = member.get(base).json()["leaderboard"]
+    assert board[0]["team_id"] == team["id"]
+    assert "Scoring team" in board[0]["username"]
+    assert member.delete(base + "/team").status_code == 409
+    member.post("/api/auth/logout")
+    member.post(
+        "/api/auth/register",
+        json={"username": "newteammate", "password": "good-password-123"},
+    )
+    member.post(base + "/join")
+    assert (
+        member.post(
+            base + "/team/join", json={"invite_code": team["invite_code"]}
+        ).status_code
+        == 200
+    )
+    assert len(member.get(base + "/submissions").json()) == 1
