@@ -19,7 +19,11 @@ from .models import (
 
 router = APIRouter(prefix="/api/engagement", tags=["Replies and reactions"])
 Kind = Literal[
-    "notebook-comment", "discussion-comment", "discussion", "competition-post"
+    "notebook-comment",
+    "discussion-comment",
+    "discussion",
+    "competition-post",
+    "competition-comment",
 ]
 Reaction = Literal["like", "helpful", "celebrate"]
 TARGETS = {
@@ -27,10 +31,16 @@ TARGETS = {
     "discussion-comment": Comment,
     "discussion": Discussion,
     "competition-post": CompetitionPost,
+    "competition-comment": ContentReply,
 }
 
 
 def require_target(db, kind, id, user=None):
+    if kind == "competition-comment":
+        parent = db.get(ContentReply, id)
+        if not parent or parent.target_kind != "competition-post":
+            raise HTTPException(404, "Comment not found")
+        require_target(db, "competition-post", parent.target_id, user)
     # Serialize writes on the parent to keep reaction toggles idempotent.
     row = db.scalar(
         select(TARGETS[kind]).where(TARGETS[kind].id == id).with_for_update()
@@ -115,6 +125,13 @@ def reply(
     db: Session = Depends(get_db),
 ):
     require_target(db, kind, id, user)
+    if kind == "notebook-comment":
+        from .models import NotebookSettings
+
+        parent = db.get(NotebookComment, id)
+        settings = db.get(NotebookSettings, parent.notebook_id)
+        if settings and not settings.allow_comments:
+            raise HTTPException(403, "Comments are disabled for this notebook")
     if not data.body.strip():
         raise HTTPException(422, "Write a reply first")
     row = ContentReply(
@@ -139,6 +156,8 @@ def remove_reply(
         raise HTTPException(404, "Reply not found")
     if row.owner_id != user.id:
         raise HTTPException(403, "You can only delete your own replies")
+    if kind == "competition-post":
+        remove_engagement(db, "competition-comment", [row.id])
     db.delete(row)
     db.commit()
 
@@ -192,6 +211,19 @@ def unreact(
 
 
 def remove_engagement(db, kind, ids):
+    if kind == "competition-post":
+        comment_ids = list(
+            db.scalars(
+                select(ContentReply.id).where(
+                    ContentReply.target_kind == kind, ContentReply.target_id.in_(ids)
+                )
+            )
+        )
+        remove_engagement(db, "competition-comment", comment_ids)
+        from .models import CompetitionTopicSettings, CompetitionTopicBookmark
+
+        for model in (CompetitionTopicSettings, CompetitionTopicBookmark):
+            db.execute(delete(model).where(model.post_id.in_(ids)))
     for model in (ContentReply, ContentReaction):
         db.execute(
             delete(model).where(model.target_kind == kind, model.target_id.in_(ids))

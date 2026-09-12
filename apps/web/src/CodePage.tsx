@@ -1,3 +1,4 @@
+import { preferredScrollBehavior } from './motion';
 import CodeComments from './CodeComments';
 import { useEffect, useRef, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
@@ -18,6 +19,7 @@ type CodeDetail = {
   owner_id: number;
   working_competition_id?: number | null;
   private?: boolean;
+  allow_comments?: boolean;
   document: Document;
   inputs: { id: number; title: string; filename: string; available: boolean }[];
   published_at: string | null;
@@ -439,7 +441,10 @@ export default function CodePage({
                       style={{ paddingLeft: `${12 + (heading.level - 1) * 12}px` }}
                       onClick={() => {
                         const target = window.document.getElementById(heading.id);
-                        target?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+                        target?.scrollIntoView({
+                          block: 'start',
+                          behavior: preferredScrollBehavior(),
+                        });
                         target?.focus({ preventScroll: true });
                       }}
                     >
@@ -511,6 +516,40 @@ export default function CodePage({
         className="code-tab-content"
       >
         <h2>Input</h2>
+        {(
+          (data.document.metadata.arena_input_sources || []) as {
+            id: number;
+            kind: string;
+            title: string;
+            path: string;
+            files: { id: number; kind?: string; filename: string; path: string }[];
+          }[]
+        ).map((input) => (
+          <article key={`${input.kind}-${input.id}`} className="code-published-cell">
+            <h3>{input.title}</h3>
+            <code>{input.path}</code>
+            <ul>
+              {input.files.map((file) => (
+                <li key={`${file.kind || input.kind}-${file.id}`}>
+                  <a
+                    href={
+                      file.kind === 'artifact'
+                        ? `/api/assets/${input.kind === 'model' ? 'models' : 'datasets'}/${input.id}/${file.id}/download`
+                        : input.kind === 'competition'
+                          ? `/api/competitions/${input.id}/files/${file.id}/download`
+                          : input.kind === 'notebook'
+                            ? `/api/notebook-outputs/${file.id}/download`
+                            : `/api/datasets/${input.id}/download`
+                    }
+                  >
+                    {file.filename}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </article>
+        ))}
+
         {data.inputs.length ? (
           data.inputs.map((input) => (
             <article key={input.id} className="code-published-cell">
@@ -526,8 +565,31 @@ export default function CodePage({
             </article>
           ))
         ) : (
-          <p>No catalog inputs attached to this published notebook.</p>
+          <p>
+            {!(data.document.metadata.arena_input_sources as unknown[])?.length &&
+              'No catalog datasets attached.'}
+          </p>
         )}
+        {(
+          (data.document.metadata.arena_notebook_inputs || []) as {
+            id: number;
+            title: string;
+            filename: string;
+            path: string;
+          }[]
+        ).map((input) => (
+          <article key={`output-${input.id}`} className="code-published-cell">
+            <h3>
+              {input.title} · {input.filename}
+            </h3>
+            <p>
+              <code>{input.path}</code>
+            </p>
+            <a href={`/api/notebook-outputs/${input.id}/download`}>
+              Download notebook output input
+            </a>
+          </article>
+        ))}
       </section>
       {(['Output', 'Logs'] as const).map((name) => {
         const cells = data.document.cells
@@ -581,7 +643,15 @@ export default function CodePage({
         hidden={tab !== 'Comments'}
         className="code-tab-content"
       >
-        {tab === 'Comments' && <CodeComments key={id} id={id} user={user} signIn={signIn} />}
+        {tab === 'Comments' && (
+          <CodeComments
+            key={id}
+            id={id}
+            user={user}
+            signIn={signIn}
+            allowComments={data.allow_comments !== false}
+          />
+        )}
       </section>
     </article>
   );

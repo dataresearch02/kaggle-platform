@@ -149,3 +149,15 @@ def test_unauthenticated_runtime(client, hub):
     assert client.post("/api/notebook-session").status_code == 401
     assert client.post("/api/notebooks/1/open").status_code == 401
     assert client.delete("/api/notebook-session").status_code == 401
+
+
+def test_runtime_limits_report_configured_accelerator(member, monkeypatch):
+    monkeypatch.setenv("NOTEBOOK_GPUS", "1")
+    monkeypatch.setenv("NOTEBOOK_CELL_TIMEOUT_SECONDS", "3600")
+    assert member.get("/api/notebook-runtime").json() == {
+        "gpu_count": 1,
+        "gpu_resource": "nvidia.com/gpu",
+        "cell_timeout_seconds": 3600,
+    }
+    member.post("/api/auth/logout")
+    assert member.get("/api/notebook-runtime").status_code == 401

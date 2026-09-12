@@ -7,10 +7,12 @@ export default function ArtifactFiles({
   kind,
   id,
   owner,
+  changed,
 }: {
   kind: 'datasets' | 'models';
   id: number;
   owner: boolean;
+  changed?: () => void;
 }) {
   const [files, setFiles] = useState<FileVersion[]>([]);
   const [error, setError] = useState('');
@@ -42,8 +44,8 @@ export default function ArtifactFiles({
       </p>
       {kind === 'datasets' && (
         <p>
-          The original CSV remains the notebook’s default input. Additional files can be downloaded
-          below.
+          New notebooks attach the original CSV and the latest version of each additional file.
+          Existing notebooks keep their pinned input versions.
         </p>
       )}
       {owner && (
@@ -61,6 +63,7 @@ export default function ArtifactFiles({
               });
               setFiles((old) => [row, ...old]);
               form.reset();
+              changed?.();
             } catch (e) {
               setError((e as Error).message);
             } finally {

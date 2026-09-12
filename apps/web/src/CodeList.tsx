@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bookmark, Code2, Search, ArrowUpRight } from 'lucide-react';
+import { Bookmark, Search, ArrowUpRight } from 'lucide-react';
 import { api, type User } from './api';
 import NewNotebook from './NewNotebook';
+import NotebookAvatar, { type NotebookPublisher } from './NotebookAvatar';
 export type CodeSummary = {
   id: number;
   title: string;
   description: string;
   owner_id: number;
   owner: string;
+  publisher?: NotebookPublisher;
   created_at: string;
   bookmarked: boolean;
 };
@@ -265,9 +267,7 @@ function CodeRows({
       <div className="code-result-list">
         {rows.map((row) => (
           <article className="code-result-row" key={row.id}>
-            <div className="code-result-icon">
-              <Code2 size={24} />
-            </div>
+            <NotebookAvatar owner={row.owner} publisher={row.publisher} />
             <div className="code-result-content">
               <h3>
                 <a
@@ -277,7 +277,8 @@ function CodeRows({
                 </a>
               </h3>
               <p className="code-result-byline">
-                By {row.owner} · {new Date(row.created_at).toLocaleDateString()} · Python notebook
+                By {row.publisher?.name || row.owner} ·{' '}
+                {new Date(row.created_at).toLocaleDateString()} · Python notebook
               </p>
               <p className="code-result-description">
                 {row.description || 'Explore this notebook and its published results.'}

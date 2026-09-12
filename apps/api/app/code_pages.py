@@ -5,15 +5,17 @@ import json
 from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 from .auth import current_user
 from .db import get_db
 from .models import (
     Notebook,
+    NotebookSettings,
     NotebookWorkingCopy,
     NotebookComment,
     NotebookPublication,
+    NotebookPublisher,
     NotebookBookmark,
     NotebookShare,
     Competition,
@@ -128,10 +130,17 @@ def list_code(
         if user
         else set()
     )
+    from .notebook_publishers import publishers_for
+
+    publishers = publishers_for(db, [row["id"] for row in page])
     return {
         "items": [
             {
                 **dict(row),
+                "publisher": publishers.get(
+                    row["id"],
+                    {"kind": "user", "name": row["owner"], "members": [row["owner"]]},
+                ),
                 "description": (row["description"] or "")[:300],
                 "bookmarked": row["id"] in bookmarks,
             }
@@ -186,6 +195,8 @@ def view_code(id: int, user=Depends(optional_user), db: Session = Depends(get_db
             else None
         ),
         "private": bool(working and working.private),
+        "allow_comments": not db.get(NotebookSettings, id)
+        or bool(db.get(NotebookSettings, id).allow_comments),
         "published_at": publication.updated_at if publication else None,
         "forked_from": (
             working.forked_from
@@ -302,6 +313,7 @@ def publish_code(
 
 
 def store_publication(db, row, data):
+    db.execute(delete(NotebookPublisher).where(NotebookPublisher.notebook_id == row.id))
     """Store a portable full notebook snapshot within the caller's transaction."""
     document = data.model_dump()
     for cell in document["cells"]:
@@ -333,13 +345,40 @@ def store_publication(db, row, data):
             inputs.append(
                 {"id": dataset.id, "title": dataset.title, "filename": dataset.filename}
             )
+    from .notebook_outputs import readable as readable_output, describe
+    from .models import User as OutputUser
+    from .notebook_visibility import visible_notebooks
+
+    notebook_inputs = []
+    for item in document.get("metadata", {}).get("arena_notebook_inputs", []):
+        output = readable_output(db, item["id"], db.get(OutputUser, row.owner_id))
+        if not output.shared or not db.scalar(
+            select(Notebook.id).where(
+                Notebook.id == output.notebook_id, visible_notebooks(None)
+            )
+        ):
+            raise HTTPException(
+                422,
+                "Notebook output inputs must be shared from a public notebook before publication",
+            )
+        notebook_inputs.append(
+            describe(output, db.get(Notebook, output.notebook_id).title)
+        )
+    from .input_sources import resolve_attachment
+
+    sources = [
+        resolve_attachment(db, db.get(OutputUser, row.owner_id), item, public=True)[0]
+        for item in document.get("metadata", {}).get("arena_input_sources", [])
+    ]
     document["metadata"] = {
+        "arena_input_sources": sources,
         "kernelspec": {
             "name": "python3",
             "display_name": "Python 3",
             "language": "python",
         },
         "arena_inputs": inputs,
+        "arena_notebook_inputs": notebook_inputs,
     }
     publication = db.get(NotebookPublication, row.id)
     if not publication:
@@ -404,6 +443,8 @@ def fork_code(
 
 @router.get("/work/status")
 def work_status(user=Depends(current_user), db: Session = Depends(get_db)):
+    from .models import BenchmarkCollection
+
     return {
         "has_work": any(
             db.scalar(
@@ -414,7 +455,13 @@ def work_status(user=Depends(current_user), db: Session = Depends(get_db)):
                 .limit(1)
             )
             is not None
-            for model in (Notebook, Dataset, ModelCard, ChallengeDetails)
+            for model in (
+                Notebook,
+                Dataset,
+                ModelCard,
+                ChallengeDetails,
+                BenchmarkCollection,
+            )
         )
     }
 
@@ -461,6 +508,9 @@ def add_code_comment(
     db: Session = Depends(get_db),
 ):
     require_visible(db, id, user)
+    settings = db.get(NotebookSettings, id)
+    if settings and not settings.allow_comments:
+        raise HTTPException(403, "Comments are disabled for this notebook")
     body = data.body.strip()
     if not body:
         raise HTTPException(422, "Write a comment first")

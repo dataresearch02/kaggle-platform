@@ -56,6 +56,11 @@ def eligible(db, notebook_id, competition_id, user):
         )
     ):
         raise HTTPException(403, "Join the competition before committing code")
+    if not json.loads(competition.solution):
+        raise HTTPException(
+            409,
+            "Local scoring is unavailable: official evaluation answers were not imported",
+        )
     return notebook, competition
 
 
@@ -355,7 +360,7 @@ async def execute_snapshot(job_id, hub=None):
         # The run directory is retained in the owner's durable workspace for inspection.
 
 
-def complete_commit(job_id, document, predictions):
+def complete_commit(job_id, document, predictions, output_files=None):
     with SessionLocal() as db:
         job = db.scalar(
             select(NotebookCommit).where(NotebookCommit.id == job_id).with_for_update()
@@ -368,6 +373,9 @@ def complete_commit(job_id, document, predictions):
             predictions, json.loads(competition.solution), competition.metric
         )
         store_publication(db, notebook, Document.model_validate(document))
+        from .notebook_publishers import record_publisher
+
+        record_publisher(db, notebook, competition.id)
         working = db.get(NotebookWorkingCopy, notebook.id)
         if working:
             working.private = 0
@@ -397,6 +405,10 @@ def complete_commit(job_id, document, predictions):
         from .team_scoring import attach_team
 
         attach_team(db, submission)
+        if output_files is not None:
+            from .notebook_files import capture_completed_job
+
+            capture_completed_job(db, job, output_files)
         job.status, job.score, job.document = "succeeded", score, json.dumps(document)
         db.commit()
 
@@ -419,7 +431,12 @@ async def commit_worker():
             if job_id is None:
                 await asyncio.sleep(2)
                 continue
-            await asyncio.wait_for(execute_snapshot(job_id), timeout=900)
+            from .runtime_jobs import integer
+
+            await asyncio.wait_for(
+                execute_snapshot(job_id),
+                timeout=integer("EVALUATION_TIMEOUT_SECONDS", 900) + 30,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

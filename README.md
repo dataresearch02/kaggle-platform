@@ -26,7 +26,7 @@ Arena has its own notebook editor: Python cells with syntax highlighting, Markdo
 
 JupyterHub runs behind the API to provision a separate scientific Python container per user. The browser only calls notebook-scoped Arena endpoints; direct `/jupyter/` URLs return 404. Python code runs in notebook containers, never in the web API. HTML outputs are sanitized and Markdown does not execute embedded HTML or scripts.
 
-Explicit Save preserves the full notebook document and outputs. Opening a published template creates a private working copy on first use. Saved notebooks can be downloaded through the notebook-scoped export endpoint. Existing saved notebooks and temporary save/discard semantics remain compatible. Interactive widget JavaScript and `input()` prompts are not supported; each cell execution has a two-minute limit and a 10 MB output limit. There is no notebook file uploader; published datasets can be consumed through their download URLs from Python.
+Explicit Save preserves the full notebook document and outputs. Opening a published template creates a private working copy on first use. Saved notebooks can be downloaded through the notebook-scoped export endpoint. Existing saved notebooks and temporary save/discard semantics remain compatible. Interactive widget JavaScript and `input()` prompts are not supported; each cell execution defaults to a configurable two-minute limit and a 10 MB output limit. Use File → Import notebook (.ipynb) to import existing notebooks. Attached resources are available under the notebook’s input directory.
 
 The Hub requires a Docker-compatible API socket to launch containers. Docker Engine's default is `/var/run/docker.sock`. For Podman, start its API service and set `DOCKER_SOCKET_PATH` in `.env` to that socket's host path. See [the notebook integration guide](docs/notebooks.md) for setup and troubleshooting.
 
@@ -62,7 +62,7 @@ Open **http://localhost:5173**. Vite proxies `/api` to FastAPI. This standalone 
 
 Open the **Create** dropdown in the sidebar to choose **Notebook**, **Competition**, **Dataset**, or **Benchmark**. Each section also has its own creation button. **Notebook** opens the full-screen Arena editor immediately with a temporary draft. Name it and click **Save** (or press Ctrl/Cmd+S) to create a permanent notebook with its saved outputs. Closing without Save discards the draft. Other creation options slide in from the right over the selected collection. The panel occupies the right half of the desktop viewport and the full width on smaller screens, with file uploads and metadata fields. Drag a CSV onto the upload area or browse for a file, review its name and size, then publish. Sign in before publishing.
 
-Competitions require a future closing date; benchmarks stay open. Both accept a public UTF-8 test CSV (up to 10 MB, unique `id` plus feature columns) and a private answer CSV (up to 1 MB, exactly `id,prediction`, matching IDs). Participants download test data and a sample submission, join, then upload predictions for automatic scoring and a leaderboard. Choose RMSE, MAE, Accuracy or binary LogLoss; only Accuracy ranks higher scores first. Include the task instructions and training-data links in the description. Evaluation data is fixed after publication. This benchmark feature evaluates prediction CSVs; hardware timing and automatic model execution are not included.
+Competitions require a future closing date; benchmarks stay open. Both accept a public UTF-8 test CSV (up to 10 MB, unique `id` plus feature columns) and a private answer CSV (up to 1 MB, exactly `id,prediction`, matching IDs). Participants download test data and a sample submission, join, then upload predictions for automatic scoring and a leaderboard. Choose RMSE, MAE, Accuracy or binary LogLoss; only Accuracy ranks higher scores first. Include the task instructions and training-data links in the description. Evaluation data is fixed after publication. These legacy CSV benchmarks remain under **Benchmarks → CSV benchmarks**. The main Benchmarks page now supports reusable Python tasks, versioned local/API models, isolated CPU evaluation, detailed results and aggregate leaderboards; see [benchmark workflow and provider setup](docs/benchmarks.md).
 
 Creator metadata, test data, answers and scores persist in PostgreSQL. A new `challenge_details` table extends existing competition records without rewriting them; the seeded competition continues to work.
 
@@ -142,8 +142,8 @@ The API also exposes `/api/health`. POST/PUT requests require `X-Arena-Client: w
 
 - New datasets and notebooks are private by default, with explicit visibility and sharing controls. Notebook history stores immutable saves and supports restoration into the editor. Catalog search returns at most 100 entries.
 - Competitions support RMSE, MAE, Accuracy and binary LogLoss, team-owned submissions and a public leaderboard. Private leaderboards, submission limits, final selection and anti-cheating controls remain incomplete.
-- Interactive notebooks use the native Arena editor and per-user Jupyter containers. Compose evaluates competition commits through a separate CPU worker with disposable offline containers, cancellation, resource limits and restart recovery. GPU support is deferred.
-- Dataset and model details support immutable additional file versions and downloads (10 MB per file). Model cards can contain hosted files and optional external links. Pinned notebook inputs, large artifact storage and hosted inference remain incomplete.
+- Interactive notebooks use the native Arena editor and per-user Jupyter containers. Compose evaluates competition commits through a separate CPU worker with disposable offline containers, cancellation, resource limits and restart recovery. OpenShift can use KubeSpawner and GPU-enabled Kubernetes Jobs; see [the core workflow and OpenShift GPU guide](docs/openshift-gpu.md).
+- Dataset and model details support immutable additional file versions and downloads (10 MB per file). Model cards can contain hosted files and optional external links. Notebook inputs pin file versions. Large artifact storage and hosted inference remain incomplete.
 - Courses contain lessons and per-user completion tracking; exercises are not automatically graded.
 - Accounts, public discussions and replies are implemented. Email verification, password recovery, OAuth, roles, moderation, quotas, and rate limiting remain future work.
 - Schema creation and starter seeding run at startup for the first milestone. Use one API process; schema migrations and coordinated bootstrap are required before scaling.
@@ -174,6 +174,8 @@ Creators can link their published Codes and model cards to a competition. These 
 
 See [the sample collection guide](docs/sample-data.md) to import public Iris and Palmer Penguins CSVs, local practice competitions, runnable starter codes and discussion prompts. The import is explicit and repeatable; it preserves existing user content and stores the samples in your configured persistent storage.
 
+The [Titanic import guide](docs/titanic-import.md) describes the official competition files, pages, attributed tutorial, archived outputs, and explicitly deferred local scoring.
+
 ### Competition overview and data catalog
 
 Competitions now have editable overview metadata, documented CSV snapshots, and a folder-based data explorer unlocked after joining. Organizers manage dates, prizes, instructions, training/reference files and column descriptions. Dataset owners can edit documentation and attribution. See [the database structure and migration guide](docs/competition-metadata.md).
@@ -203,3 +205,23 @@ Use the avatar in the header to open the account drawer. Profile/photo editing,
 groups, expiring CLI API tokens, visibility/password settings, logout and persistent
 service notifications are implemented. See [the account guide](docs/accounts.md)
 for routes, permissions and operator notification commands.
+
+### CPU training with PyTorch and XGBoost
+
+The runtime includes runnable model-training examples with validation, persistent checkpoints, and reload checks. Run them from a code cell. See [the AI training guide](docs/ai-training.md) for package versions, model storage, runtime upgrades, and resource limits.
+
+### Importing notebooks
+
+In the notebook editor, use **File → Import notebook (.ipynb)** to replace the current cells after confirmation. Python nbformat 4 notebooks up to 10 MB and 500 cells are supported. Imported Markdown and saved outputs are displayed without executing code. Attach required datasets separately, then use **Save Version** to persist the import. The adjacent count shows saved snapshots; click it to preview history and restore a version as unsaved edits.
+
+### Notebook version and sharing panels
+
+**Save Version** opens a right-side panel. Create a named version with tags, or select a saved version to edit its labels without changing cells or outputs. Choose **Save notebook only**, or **Save & Run All (Commit)** for an eligible competition notebook. Competition commits run through the isolated evaluation worker; competitions without local scoring answers cannot commit. The File menu and keyboard save shortcut still save the working notebook directly.
+
+**Share** opens private/public visibility, viewer invitations, current group-member selection, and comment settings. Changes apply together on Save. Viewers can read and fork, while only the owner can edit. Public sharing uses the saved snapshot and respects competition evaluation requirements. Group selection creates individual invitations; it is not a live group access rule.
+
+The [data architecture review](docs/data-architecture.md) documents storage relationships, pinned multi-file inputs, model artifacts, integrity auditing, and the next schema migrations.
+
+See [the portal comparison](docs/portal-comparison.md) for the Kaggle workflow comparison and remaining gaps.
+
+[OpenShift GPU deployment and the two core notebook workflows](docs/openshift-gpu.md) includes RTX 4090 runtime settings, persistent storage requirements, and target-cluster acceptance checks.

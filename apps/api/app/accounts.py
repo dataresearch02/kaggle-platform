@@ -5,6 +5,8 @@ import hashlib
 import json
 import secrets
 import time
+import re
+from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import (
@@ -77,9 +79,8 @@ def profile_info(db, user):
         "joined_at": user.created_at,
         **ProfileInput().model_dump(),
         **(json.loads(row.details) if row else {}),
-        "avatar_url": (
-            f"/api/profiles/{user.username}/avatar" if row and row.avatar else None
-        ),
+        "avatar_url": f"/api/profiles/{user.username}/avatar",
+        "has_custom_avatar": bool(row and row.avatar),
         "visibility": row.visibility if row else "public",
     }
 
@@ -116,12 +117,36 @@ def public_profile(
     return profile_info(db, visible_profile(db, username, user))
 
 
+def default_avatar(pronouns=""):
+    words = set(re.findall(r"[a-z]+", pronouns.lower()))
+    male = bool(words & {"he", "him", "his"})
+    female = bool(words & {"she", "her", "hers"})
+    style = (
+        "man" if male and not female else "woman" if female and not male else "neutral"
+    )
+    return Response(
+        (Path(__file__).parent / "avatars" / f"{style}.svg").read_bytes(),
+        media_type="image/svg+xml",
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/avatar-default")
+def neutral_avatar():
+    return default_avatar()
+
+
 @router.get("/profiles/{username}/avatar")
 def avatar(username: str, user=Depends(optional_user), db: DBSession = Depends(get_db)):
     owner = visible_profile(db, username, user)
     row = db.get(UserProfile, owner.id)
     if not row or not row.avatar:
-        raise HTTPException(404, "No profile photo")
+        return default_avatar(
+            json.loads(row.details).get("pronouns", "") if row else ""
+        )
     return Response(
         base64.b64decode(row.avatar),
         media_type=row.avatar_type,

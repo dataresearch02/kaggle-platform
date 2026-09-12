@@ -1,3 +1,4 @@
+import Markdown from './Markdown';
 import { useEffect, useState } from 'react';
 import { Download, FileText, Folder, Lock } from 'lucide-react';
 import { api, type Item } from './api';
@@ -132,7 +133,7 @@ export default function CompetitionData({
   return (
     <>
       <h2>Competition data</h2>
-      <p className="competition-description">{description}</p>
+      <Markdown>{description}</Markdown>
       <p className="muted">
         {files.length} files · {(files.reduce((sum, file) => sum + file.size, 0) / 1024).toFixed(1)}{' '}
         KB · CSV

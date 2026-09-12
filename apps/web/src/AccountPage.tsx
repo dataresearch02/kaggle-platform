@@ -200,14 +200,15 @@ export default function AccountPage({
                   />
                 </label>
                 <small>PNG or JPEG, up to 2 MB. Your photo follows your profile visibility.</small>
-                {profile.avatar_url && (
+                {profile.has_custom_avatar && (
                   <button
                     className="text-button"
                     disabled={busy}
                     onClick={() =>
                       void run(async () => {
                         await api('/account/avatar', { method: 'DELETE' });
-                        setProfile({ ...profile, avatar_url: null });
+                        setProfile({ ...profile, has_custom_avatar: false });
+                        setRevision((n) => n + 1);
                         updated();
                       }, 'Profile photo removed')
                     }
@@ -228,6 +229,7 @@ export default function AccountPage({
                         body: JSON.stringify({ ...data, website: data.website || null }),
                       }),
                     );
+                    setRevision((n) => n + 1);
                     updated();
                   }, 'Profile saved');
                 }}

@@ -14,7 +14,9 @@ export default function CommitNotebook({
   save,
   disabled,
   close,
+  statusOnly = false,
 }: {
+  statusOnly?: boolean;
   notebookId: number;
   competitionId: number;
   save: () => Promise<boolean>;
@@ -22,6 +24,21 @@ export default function CommitNotebook({
   close?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [evaluationAvailable, setEvaluationAvailable] = useState<boolean | null>(null);
+  useEffect(() => {
+    let active = true;
+    setEvaluationAvailable(null);
+    api<{ evaluation_available?: boolean }>(`/competitions/${competitionId}`)
+      .then((item) => {
+        if (active) setEvaluationAvailable(item.evaluation_available !== false);
+      })
+      .catch((error) => {
+        if (active) setError(error.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [competitionId]);
   const [filename, setFilename] = useState('submission.csv');
   const [job, setJob] = useState<Commit | null>(null);
   const [busy, setBusy] = useState(false);
@@ -50,13 +67,19 @@ export default function CommitNotebook({
   const pending = job?.status === 'queued' || job?.status === 'running';
   return (
     <div className="notebook-commit">
-      <button
-        className="button secondary"
-        disabled={disabled || busy || pending}
-        onClick={() => setOpen(!open)}
-      >
-        {pending ? `Commit ${job.status}…` : 'Save & Commit'}
-      </button>
+      {!statusOnly && (
+        <button
+          className="button secondary"
+          disabled={disabled || busy || pending || evaluationAvailable !== true}
+          onClick={() => setOpen(!open)}
+        >
+          {evaluationAvailable === false
+            ? 'Local scoring unavailable'
+            : pending
+              ? `Commit ${job.status}…`
+              : 'Save & Commit'}
+        </button>
+      )}
       {job && (
         <span role="status" className="commit-status">
           {job.status === 'succeeded'
@@ -117,7 +140,7 @@ export default function CommitNotebook({
         >
           <strong>Run and evaluate in competition</strong>
           <p>
-            An isolated CPU job runs your saved cells from top to bottom without network access.
+            An isolated runtime job runs your saved cells from top to bottom without network access.
             Read test data from <code>test.csv</code> or <code>os.environ['ARENA_TEST_DATA']</code>.
           </p>
           <label>
@@ -134,7 +157,10 @@ export default function CommitNotebook({
             publishes this snapshot in competition Code only after success. Join the competition
             first.
           </p>
-          <button type="submit" disabled={disabled || busy || pending}>
+          <button
+            type="submit"
+            disabled={disabled || busy || pending || evaluationAvailable !== true}
+          >
             {busy ? 'Saving…' : 'Run and evaluate'}
           </button>
           <button type="button" disabled={busy} onClick={() => setOpen(false)}>

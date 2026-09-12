@@ -74,10 +74,14 @@ def test_hosted_model_without_reference_url(member):
         },
     )
     assert response.status_code == 201
+    detail_url = f"/api/models/{response.json()['id']}"
+    assert member.get(detail_url).json()["input_available"] is False
+    assert member.get("/api/models/999999").status_code == 404
     base = f"/api/assets/models/{response.json()['id']}"
     artifact = member.post(
         base, data={"path": "weights.bin"}, files={"file": ("weights.bin", b"weights")}
     )
     assert artifact.status_code == 201
+    assert member.get(detail_url).json()["input_available"] is True
     member.post("/api/auth/logout")
     assert member.get(f"{base}/{artifact.json()['id']}/download").content == b"weights"

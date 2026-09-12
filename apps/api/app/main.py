@@ -21,7 +21,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, JSONResponse, Response
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DBSession
 
@@ -91,6 +91,9 @@ from .notebook_runtime import router as notebook_router, notebook_document
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(engine)
+    from .storage_indexes import ensure_storage_indexes
+
+    ensure_storage_indexes(engine)
     with SessionLocal() as db:
         seed(db)
         backfill_metadata(db)
@@ -129,6 +132,9 @@ app.include_router(notebook_router)
 app.include_router(draft_router)
 app.include_router(editor_router)
 app.include_router(competition_pages_router)
+from .discussion_feed import router as discussion_feed_router
+
+app.include_router(discussion_feed_router)
 app.include_router(metadata_router)
 app.include_router(code_router)
 app.include_router(commit_router)
@@ -205,6 +211,18 @@ def public(obj, db=None):
 
         result["code"] = published_code(db, obj)
     if db and isinstance(obj, Competition):
+        from .models import CompetitionSource
+
+        result["evaluation_available"] = bool(json.loads(obj.solution))
+        source = db.get(CompetitionSource, obj.id)
+        if source:
+            result.update(
+                source_url=source.source_url,
+                rules_url=source.rules_url,
+                rules_content=source.rules_content,
+            )
+            if source.ongoing:
+                result["deadline"] = None
         details = db.get(ChallengeDetails, obj.id)
         if details:
             owner = db.get(User, details.owner_id)
@@ -317,14 +335,23 @@ def logout(request: Request, response: Response, db: DBSession = Depends(get_db)
 
 
 @app.get("/api/datasets")
-def datasets(q: str = "", user=Depends(optional_user), db: DBSession = Depends(get_db)):
+def datasets(
+    q: str = "",
+    before: int = 2147483647,
+    user=Depends(optional_user),
+    db: DBSession = Depends(get_db),
+):
     return [
         public(row, db)
         for row in db.scalars(
             select(Dataset)
             .where(
                 visible_datasets(user),
-                Dataset.title.icontains(q[:100], autoescape=True),
+                Dataset.id < before,
+                or_(
+                    Dataset.title.icontains(q[:100], autoescape=True),
+                    Dataset.filename.icontains(q[:100], autoescape=True),
+                ),
             )
             .order_by(Dataset.id.desc())
             .limit(100)
@@ -575,6 +602,24 @@ def sample(
 ):
     obj = require(db, Competition, id)
     require_data_access(db, id, user)
+    if not json.loads(obj.solution):
+        from .models import CompetitionDataFile
+
+        original = db.scalar(
+            select(CompetitionDataFile).where(
+                CompetitionDataFile.competition_id == id,
+                CompetitionDataFile.role == "submission",
+            )
+        )
+        if not original:
+            raise HTTPException(409, "No submission template is available")
+        return Response(
+            original.content,
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": 'attachment; filename="sample_submission.csv"'
+            },
+        )
     content = "id,prediction\n" + "".join(
         f"{key},0\n" for key in json.loads(obj.solution)
     )
@@ -621,6 +666,11 @@ async def submit(
         select(Entry).where(Entry.user_id == user.id, Entry.competition_id == id)
     ):
         raise HTTPException(403, "Join the competition before submitting")
+    if not json.loads(obj.solution):
+        raise HTTPException(
+            409,
+            "Local scoring is unavailable: official evaluation answers were not imported",
+        )
     content = await read_upload(file, 1024 * 1024)
     try:
         score = score_csv(content, json.loads(obj.solution), obj.metric)
@@ -834,6 +884,25 @@ def models(q: str = "", db: DBSession = Depends(get_db)):
     return listing(db, ModelCard, q)
 
 
+@app.get("/api/models/{id}")
+def model_detail(id: int, user=Depends(optional_user), db: DBSession = Depends(get_db)):
+    from .artifacts import resource
+    from .models import ArtifactVersion
+
+    return {
+        **public(resource(db, "models", id, user), db),
+        "input_available": bool(
+            db.scalar(
+                select(ArtifactVersion.id)
+                .where(
+                    ArtifactVersion.kind == "models", ArtifactVersion.resource_id == id
+                )
+                .limit(1)
+            )
+        ),
+    }
+
+
 @app.post("/api/models", status_code=201)
 def create_model(
     data: ModelInput,
@@ -849,7 +918,14 @@ def create_model(
     return public(obj, db)
 
 
-WORK_MODELS = {"datasets": Dataset, "notebooks": Notebook, "models": ModelCard}
+from .models import BenchmarkCollection
+
+WORK_MODELS = {
+    "datasets": Dataset,
+    "notebooks": Notebook,
+    "models": ModelCard,
+    "benchmark-collections": BenchmarkCollection,
+}
 
 
 @app.get("/api/work")
@@ -857,7 +933,15 @@ def your_work(user: User = Depends(current_user), db: DBSession = Depends(get_db
     items = []
     for kind, model in WORK_MODELS.items():
         for row in db.scalars(select(model).where(model.owner_id == user.id)):
-            items.append({**public(row, db), "work_kind": kind})
+            items.append(
+                {
+                    **public(row, db),
+                    "work_kind": (
+                        "benchmarks" if kind == "benchmark-collections" else kind
+                    ),
+                    "work_resource": kind,
+                }
+            )
     for details in db.scalars(
         select(ChallengeDetails).where(ChallengeDetails.owner_id == user.id)
     ):
@@ -920,6 +1004,49 @@ async def delete_work(
         row = owned_work(kind, id, user, db)
         db.refresh(row, with_for_update=True)
         task = None
+        if kind == "benchmark-collections":
+            from .models import BenchmarkRun
+
+            jobs = list(
+                db.scalars(select(BenchmarkRun).where(BenchmarkRun.collection_id == id))
+            )
+            if any(job.status in ("queued", "running") for job in jobs):
+                raise HTTPException(409, "Cancel active benchmark runs before deleting")
+            for job in jobs:
+                for directory in (DATA_DIR / "evaluations").glob(
+                    f"benchmark-{job.id}-*"
+                ):
+                    db.add(
+                        WorkFileDeletion(
+                            owner_id=user.id, kind="benchmark-run", path=directory.name
+                        )
+                    )
+                db.delete(job)
+            db.flush()
+        if kind in ("competitions", "benchmarks"):
+            from .models import NotebookDraftCompetition
+            import time
+
+            linked_drafts = select(NotebookDraftCompetition.draft_id).where(
+                NotebookDraftCompetition.competition_id == id
+            )
+            if db.scalar(
+                select(NotebookDraft.id)
+                .where(
+                    NotebookDraft.id.in_(linked_drafts),
+                    NotebookDraft.expires_at > time.time(),
+                )
+                .limit(1)
+            ):
+                raise HTTPException(
+                    409,
+                    "Close active competition notebook drafts before deleting this competition",
+                )
+            db.execute(
+                delete(NotebookDraftCompetition).where(
+                    NotebookDraftCompetition.competition_id == id
+                )
+            )
         if kind in ("datasets", "models"):
             delete_artifacts(db, kind, id, user.id)
         if kind == "datasets":
@@ -950,8 +1077,37 @@ async def delete_work(
                 raise HTTPException(
                     409, "Wait for the notebook commit to finish before deleting"
                 )
-            from .models import NotebookVersion
+            from .models import (
+                NotebookVersion,
+                NotebookSettings,
+                NotebookOutput,
+                NotebookWorkspaceFolder,
+            )
 
+            db.execute(
+                delete(NotebookWorkspaceFolder).where(
+                    NotebookWorkspaceFolder.notebook_id == id
+                )
+            )
+            for key in db.scalars(
+                select(NotebookOutput.storage_key)
+                .where(NotebookOutput.notebook_id == id)
+                .distinct()
+            ):
+                db.add(
+                    WorkFileDeletion(owner_id=user.id, kind="notebook-output", path=key)
+                )
+            db.execute(delete(NotebookOutput).where(NotebookOutput.notebook_id == id))
+
+            db.execute(
+                delete(NotebookSettings).where(NotebookSettings.notebook_id == id)
+            )
+
+            from .models import NotebookPublisher
+
+            db.execute(
+                delete(NotebookPublisher).where(NotebookPublisher.notebook_id == id)
+            )
             db.execute(delete(NotebookVersion).where(NotebookVersion.notebook_id == id))
             db.execute(delete(NotebookCommit).where(NotebookCommit.notebook_id == id))
             db.execute(
@@ -1012,6 +1168,22 @@ async def delete_work(
                 delete(ChallengeDetails).where(ChallengeDetails.competition_id == id)
             )
         if kind in ("competitions", "benchmarks"):
+            from .models import CompetitionSource, DiscussionImage
+
+            for image in db.scalars(
+                select(DiscussionImage).where(DiscussionImage.competition_id == id)
+            ):
+                db.add(
+                    WorkFileDeletion(
+                        owner_id=image.owner_id, kind="discussion-image", path=image.id
+                    )
+                )
+                db.delete(image)
+            db.flush()
+
+            db.execute(
+                delete(CompetitionSource).where(CompetitionSource.competition_id == id)
+            )
             db.execute(
                 delete(CompetitionOverview).where(
                     CompetitionOverview.competition_id == id
@@ -1083,7 +1255,7 @@ def active_events(user: User = Depends(current_user), db: DBSession = Depends(ge
         )
         .order_by(NotebookCommit.id.desc())
     ).all()
-    return [
+    events = [
         {
             "id": job.id,
             "notebook_id": job.notebook_id,
@@ -1092,3 +1264,37 @@ def active_events(user: User = Depends(current_user), db: DBSession = Depends(ge
         }
         for job, title in rows
     ]
+
+    from .models import BenchmarkRun, BenchmarkCollection
+
+    events.extend(
+        {
+            "id": -job.id,
+            "benchmark_id": job.collection_id,
+            "title": title,
+            "status": job.status,
+        }
+        for job, title in db.execute(
+            select(BenchmarkRun, BenchmarkCollection.title)
+            .join(
+                BenchmarkCollection,
+                BenchmarkRun.collection_id == BenchmarkCollection.id,
+            )
+            .where(
+                BenchmarkRun.owner_id == user.id,
+                BenchmarkRun.status.in_(["queued", "running"]),
+            )
+        )
+    )
+    return events
+
+
+from .notebook_outputs import router as notebook_outputs_router
+
+from . import input_sources
+
+app.include_router(notebook_outputs_router)
+
+from .benchmarks import router as benchmark_router
+
+app.include_router(benchmark_router)

@@ -73,7 +73,16 @@ test('published code forks with inputs into an isolated editor and retains outpu
     await expect(page.getByLabel('Output cell 2')).toContainText('INPUT_SUM 42', {
       timeout: 60000,
     });
-    await page.getByRole('button', { name: 'Publish code and outputs', exact: true }).click();
+    await page
+      .locator('.notebook-menubar')
+      .getByRole('button', { name: 'File', exact: true })
+      .click();
+    await page.getByRole('menuitem', { name: 'Save notebook', exact: true }).click();
+    await expect(page.locator('.notebook-save-state')).toHaveText('Saved permanently');
+    const savedDocument = await (
+      await page.request.get(`/api/notebooks/${created.id}/working-copy`)
+    ).json();
+    await page.request.put(`/api/code/${created.id}/publication`, { headers, data: savedDocument });
     await page.getByRole('button', { name: 'Version history', exact: true }).click();
     const history = page.getByRole('dialog', { name: 'Notebook version history' });
     await expect(history.locator('.history-version').first()).toBeVisible();
@@ -81,7 +90,7 @@ test('published code forks with inputs into an isolated editor and retains outpu
     page.once('dialog', (dialog) => dialog.accept());
     await history.getByRole('button', { name: 'Restore into editor' }).click();
     await expect(page.locator('.arena-cell .cm-content')).toHaveText('print(42)');
-    await page.getByRole('link', { name: 'View published code', exact: true }).click();
+    await page.goto(`/#code/${created.id}`);
     await expect(page.getByLabel('Published output cell 2')).toContainText('INPUT_SUM 42');
     await expect(page.getByRole('button', { name: 'Run all', exact: true })).toHaveCount(0);
     const original = await (await page.request.get(`/api/code/${created.id}`)).json();
@@ -110,8 +119,19 @@ test('published code forks with inputs into an isolated editor and retains outpu
     await recipient.locator('.arena-cell .cm-content').last().fill("print('MY_FORK_ONLY')");
     await recipient.getByRole('button', { name: 'Run all', exact: true }).click();
     await expect(recipient.getByLabel('Output cell 2')).toContainText('MY_FORK_ONLY');
-    await recipient.getByRole('button', { name: 'Publish code and outputs', exact: true }).click();
-    await recipient.getByRole('link', { name: 'View published code', exact: true }).click();
+    await recipient
+      .locator('.notebook-menubar')
+      .getByRole('button', { name: 'File', exact: true })
+      .click();
+    await recipient.getByRole('menuitem', { name: 'Save notebook', exact: true }).click();
+    await expect(recipient.locator('.notebook-save-state')).toHaveText('Saved permanently');
+    const forkUrl = recipient.url().replace(/\/edit$/, '');
+    await recipient.getByRole('button', { name: 'Share', exact: true }).click();
+    const sharePanel = recipient.getByRole('dialog', { name: 'Share notebook' });
+    await sharePanel.getByRole('radio').nth(1).check();
+    await sharePanel.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(sharePanel).toHaveCount(0);
+    await recipient.goto(forkUrl);
     await expect(recipient.getByLabel('Published output cell 2')).toContainText('MY_FORK_ONLY');
     await recipient.reload();
     await expect(recipient.getByLabel('Published output cell 2')).toContainText('MY_FORK_ONLY');

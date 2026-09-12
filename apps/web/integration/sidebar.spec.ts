@@ -48,7 +48,7 @@ test('home and notebook share navigation and Create menus stay anchored above pa
     const notebook = page.locator('.notebook-sidebar');
     await expect(notebook).toBeVisible();
     await notebook.getByRole('button', { name: 'Expand navigation', exact: true }).click();
-    expect((await notebook.boundingBox())!.width).toBe(homeWidth);
+    await expect.poll(async () => (await notebook.boundingBox())!.width).toBe(homeWidth);
     expect(
       await notebook
         .locator('nav button')

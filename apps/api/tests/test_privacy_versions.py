@@ -12,6 +12,7 @@ def test_private_notebook_sharing_revocation_and_history(member):
     base = f"/api/code/{row['id']}"
     initial = member.get(base + "/versions").json()
     assert len(initial) == 1
+    assert member.get(base + "/versions/count").json() == {"count": 1}
     with next(app.dependency_overrides[get_db]()) as db:
         notebook = db.get(Notebook, row["id"])
         save_version(db, notebook, document())
@@ -19,6 +20,7 @@ def test_private_notebook_sharing_revocation_and_history(member):
         save_version(db, notebook, document())
         db.commit()
     assert len(member.get(base + "/versions").json()) == 2
+    assert member.get(base + "/versions/count").json() == {"count": 2}
     assert member.get(base + f"/versions/{initial[0]['id']}").json()["cells"][0][
         "source"
     ] == ["print(1)"]
@@ -44,6 +46,7 @@ def test_private_notebook_sharing_revocation_and_history(member):
     )
     assert member.get(base).status_code == 200
     assert member.get(base + "/versions").status_code == 404
+    assert member.get(base + "/versions/count").status_code == 404
     assert member.put(base + "/publication", json=document()).status_code == 403
     member.post("/api/auth/logout")
     member.post(

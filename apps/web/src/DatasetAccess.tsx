@@ -59,6 +59,7 @@ export default function DatasetAccess({ id }: { id: number }) {
             competition.
           </p>
           <form
+            className="metadata-form"
             onSubmit={(event) => {
               event.preventDefault();
               void change('shares', 'POST', {
@@ -70,13 +71,16 @@ export default function DatasetAccess({ id }: { id: number }) {
               Share dataset with username
               <input name="username" required minLength={3} maxLength={40} />
             </label>
-            <button disabled={busy}>Grant read access</button>
+            <button className="button secondary" disabled={busy}>
+              Grant read access
+            </button>
           </form>
           <ul>
             {data.shares.map((person) => (
               <li key={person.id}>
                 {person.username}{' '}
                 <button
+                  className="button secondary small"
                   disabled={busy}
                   onClick={() => void change(`shares/${person.id}`, 'DELETE')}
                 >

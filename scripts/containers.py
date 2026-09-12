@@ -109,6 +109,7 @@ def main():
         "notebook-image",
         "db",
         "api",
+        "evaluation-worker",
         "jupyterhub",
         "web",
     ):
@@ -120,7 +121,7 @@ def main():
             *(["--force-recreate"] if args.build else []),
             service,
         )
-        if service != "web":
+        if service not in ("web", "evaluation-worker"):
             wait_for(service, completed=service in ("storage-check", "notebook-image"))
     print("Arena is running at http://localhost:8080")
 

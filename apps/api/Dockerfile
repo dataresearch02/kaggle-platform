@@ -8,7 +8,8 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY app ./app
 RUN mkdir -p /data \
-    && chown arena:arena /data
+    && chown arena:root /data \
+    && chmod g=u /data
 
 USER arena
 ENV DATA_DIR=/data

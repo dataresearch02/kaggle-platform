@@ -1,0 +1,2 @@
+# PyTorch and XGBoost are selected with Docker build arguments.
+# CPU defaults stay pinned in the Dockerfile; GPU builds require CUDA variants.

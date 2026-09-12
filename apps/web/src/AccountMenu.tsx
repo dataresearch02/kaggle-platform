@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Bell, FolderOpen, KeyRound, LogOut, Settings, UserRound, Users, X } from 'lucide-react';
 import { api, type User } from './api';
+import ProfilePhoto from './ProfilePhoto';
 
 export type Profile = {
   username: string;
@@ -13,17 +14,17 @@ export type Profile = {
   bio: string;
   website: string | null;
   avatar_url: string | null;
+  has_custom_avatar: boolean;
   joined_at: string;
   visibility: 'public' | 'private';
 };
 export function Avatar({ profile, revision = 0 }: { profile?: Profile | null; revision?: number }) {
   return (
     <span className="account-avatar">
-      {profile?.avatar_url ? (
-        <img src={`${profile.avatar_url}?v=${revision}`} alt="" />
-      ) : (
-        <UserRound aria-hidden="true" size={24} />
-      )}
+      <ProfilePhoto
+        src={profile?.avatar_url ? `${profile.avatar_url}?v=${revision}` : null}
+        alt={profile ? `${profile.username}'s profile photo` : 'Default profile photo'}
+      />
     </span>
   );
 }

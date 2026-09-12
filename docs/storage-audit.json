@@ -1,0 +1,77 @@
+{
+  "tables": {
+    "users": 147,
+    "sessions": 146,
+    "datasets": 31,
+    "competitions": 4,
+    "entries": 61,
+    "submissions": 39,
+    "notebooks": 167,
+    "courses": 3,
+    "progress": 4,
+    "discussions": 3,
+    "comments": 0,
+    "model_cards": 1,
+    "challenge_details": 3,
+    "notebook_drafts": 17,
+    "work_file_deletions": 1,
+    "competition_resources": 41,
+    "competition_posts": 5,
+    "sample_imports": 2,
+    "competition_overviews": 4,
+    "dataset_profiles": 31,
+    "competition_data_files": 11,
+    "notebook_publications": 77,
+    "notebook_bookmarks": 0,
+    "notebook_shares": 1,
+    "notebook_comments": 1,
+    "content_replies": 2,
+    "content_reactions": 4,
+    "notebook_working_copies": 130,
+    "notebook_commits": 42,
+    "competition_teams": 0,
+    "competition_team_members": 0,
+    "notebook_versions": 157,
+    "dataset_access": 13,
+    "dataset_shares": 0,
+    "submission_teams": 0,
+    "artifact_versions": 0,
+    "user_profiles": 2,
+    "api_tokens": 0,
+    "user_groups": 1,
+    "group_members": 1,
+    "service_notices": 58,
+    "notice_reads": 1,
+    "competition_sources": 1,
+    "notebook_settings": 9,
+    "notebook_outputs": 28,
+    "notebook_workspace_folders": 9,
+    "notebook_draft_competitions": 3
+  },
+  "file_stores": {
+    "uploads": {
+      "references": 31,
+      "referenced_bytes": 128599,
+      "unreferenced_files": []
+    },
+    "artifacts": {
+      "references": 0,
+      "referenced_bytes": 0,
+      "unreferenced_files": []
+    },
+    "notebook-outputs": {
+      "references": 28,
+      "referenced_bytes": 477284,
+      "unreferenced_files": []
+    }
+  },
+  "duplicate_bytes": 239010,
+  "issues": [],
+  "document_bytes": {
+    "notebook_working_copies": 892832,
+    "notebook_versions": 285358,
+    "notebook_publications": 394171,
+    "notebook_commits": 37820
+  },
+  "competition_csv_bytes": 113428
+}

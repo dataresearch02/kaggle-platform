@@ -206,3 +206,137 @@ def test_competition_draft_cannot_bypass_evaluation_by_omitting_context(member, 
     for url in ["/api/notebooks", "/api/competitions/1/resources/notebooks"]:
         row = next(item for item in member.get(url).json() if item["id"] == notebook_id)
         assert "unevaluated edit" not in row["code"]
+
+
+def test_competition_creation_attaches_files_and_retains_link_without_client_context(
+    member, hub
+):
+    member.post("/api/competitions/1/join")
+    draft = member.post("/api/notebook-drafts?competition_id=1").json()["id"]
+    response = member.get(f"/api/editor/drafts/{draft}/document")
+    assert response.status_code == 200, response.text
+    document = response.json()
+    assert document["metadata"]["arena_competition_id"] == 1
+    source = document["metadata"]["arena_input_sources"][0]
+    assert source["kind"] == "competition" and source["id"] == 1
+    assert source["files"]
+    for file in source["files"]:
+        assert any(
+            path.endswith(f'workspaces/arena-draft-{draft}/{file["path"]}')
+            for path in hub.files
+        )
+    saved = member.post(
+        f"/api/notebook-drafts/{draft}/save",
+        json={"title": "Linked competition notebook"},
+    )
+    assert saved.status_code == 200, saved.text
+    id = saved.json()["id"]
+    detail = member.get(f"/api/code/{id}").json()
+    assert detail["working_competition_id"] == 1
+    assert detail["document"]["metadata"]["arena_input_sources"] == [source]
+    assert (
+        member.post(
+            f"/api/notebook-drafts/{draft}/save",
+            json={"title": "Wrong link", "competition_id": 2},
+        ).status_code
+        == 409
+    )
+    # Saving remains private and does not publish to the competition code catalog.
+    assert not any(
+        row["id"] == id
+        for row in member.get("/api/code?competition_id=1").json()["items"]
+    )
+
+
+@pytest.mark.parametrize("kind", ["dataset", "model"])
+def test_resource_draft_pins_input_and_preserves_it_on_save(member, hub, kind):
+    from app.models import NotebookDraftInput
+
+    if kind == "dataset":
+        response = member.post(
+            "/api/datasets",
+            data={"title": "Source data", "description": "Original"},
+            files={"file": ("train.csv", b"x\n1\n")},
+        )
+    else:
+        response = member.post(
+            "/api/models",
+            json={
+                "title": "Source model",
+                "description": "Weights",
+                "framework": "PyTorch",
+                "license": "MIT",
+            },
+        )
+    assert response.status_code == 201, response.text
+    source_id = response.json()["id"]
+    asset_url = f"/api/assets/{kind}s/{source_id}"
+    old = member.post(
+        asset_url,
+        data={"path": "weights.bin"},
+        files={"file": ("weights.bin", b"original")},
+    )
+    assert old.status_code == 201
+    created = member.post(
+        f"/api/notebook-drafts?source_kind={kind}&source_id={source_id}"
+    )
+    assert created.status_code == 201, created.text
+    draft_id = created.json()["id"]
+    member.post(
+        asset_url,
+        data={"path": "weights.bin"},
+        files={"file": ("weights.bin", b"newer")},
+    )
+    opened = member.post(f"/api/notebook-drafts/{draft_id}/open")
+    assert opened.status_code == 200, opened.text
+    document = hub.files[f"/user/arena-2/api/contents/arena-draft-{draft_id}.ipynb"][
+        "content"
+    ]
+    source = document["metadata"]["arena_input_sources"][0]
+    assert source["kind"] == kind
+    assert source["id"] == source_id
+    assert source["path"].startswith("input/")
+    assert "resource-inputs" in [cell["id"] for cell in document["cells"]]
+    # File content was copied from the pinned version, not the newer upload.
+    import base64
+
+    copied = [
+        base64.b64decode(file["content"])
+        for file in hub.files.values()
+        if file.get("type") == "file"
+    ]
+    assert b"original" in copied
+    assert b"newer" not in copied
+    saved = member.post(
+        f"/api/notebook-drafts/{draft_id}/save", json={"title": "Consumer"}
+    )
+    assert saved.status_code == 200, saved.text
+    persisted = member.get(f"/api/code/{saved.json()['id']}").json()
+    assert persisted["document"]["metadata"]["arena_input_sources"] == [source]
+    assert member.delete(f"/api/notebook-drafts/{draft_id}").status_code == 204
+    with next(app.dependency_overrides[get_db]()) as db:
+        assert db.get(NotebookDraftInput, draft_id) is None
+
+
+def test_resource_draft_checks_access_and_invalid_sources(member, hub):
+    dataset = member.post(
+        "/api/datasets",
+        data={"title": "Private source", "description": "Private"},
+        files={"file": ("x.csv", b"x\n1\n")},
+    ).json()
+    assert member.post("/api/notebook-drafts?source_kind=dataset").status_code == 422
+    assert (
+        member.post("/api/notebook-drafts?source_kind=unknown&source_id=1").status_code
+        == 422
+    )
+    member.post("/api/auth/logout")
+    member.post(
+        "/api/auth/register",
+        json={"username": "source_outsider", "password": "good-password-123"},
+    )
+    assert (
+        member.post(
+            f"/api/notebook-drafts?source_kind=dataset&source_id={dataset['id']}"
+        ).status_code
+        == 404
+    )

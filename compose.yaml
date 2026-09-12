@@ -32,7 +32,11 @@ services:
       POSTGRES_USER: arena
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
       DATA_DIR: /data
+      BENCHMARK_PROVIDERS_JSON: ${BENCHMARK_PROVIDERS_JSON:-[]}
+      BENCHMARK_API_KEY: ${BENCHMARK_API_KEY:-}
       EVALUATION_BACKEND: isolated
+      NOTEBOOK_CELL_TIMEOUT_SECONDS: ${NOTEBOOK_CELL_TIMEOUT_SECONDS:-120}
+      EVALUATION_TIMEOUT_SECONDS: ${EVALUATION_TIMEOUT_SECONDS:-900}
       ALLOWED_ORIGINS: http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173
       JUPYTERHUB_API_URL: http://jupyterhub:8081/jupyter/hub/api
       JUPYTERHUB_PROXY_URL: http://jupyterhub:8000/jupyter
@@ -64,9 +68,13 @@ services:
       POSTGRES_USER: arena
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
       DATA_DIR: /data
+      BENCHMARK_PROVIDERS_JSON: ${BENCHMARK_PROVIDERS_JSON:-[]}
+      BENCHMARK_API_KEY: ${BENCHMARK_API_KEY:-}
       EVALUATION_BACKEND: isolated
+      NOTEBOOK_CELL_TIMEOUT_SECONDS: ${NOTEBOOK_CELL_TIMEOUT_SECONDS:-120}
+      EVALUATION_TIMEOUT_SECONDS: ${EVALUATION_TIMEOUT_SECONDS:-900}
       EVALUATION_HOST_PATH: ${DATA_ROOT}/platform/evaluations
-      EVALUATION_IMAGE: arena-singleuser:5.3.0
+      EVALUATION_IMAGE: ${ARENA_RUNTIME_IMAGE:-arena-singleuser:cpu-2026.09.1}
     volumes:
       - ${DATA_ROOT}/platform:/data:z
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
@@ -89,7 +97,7 @@ services:
   # Build the scientific runtime once. JupyterHub creates real per-user containers
   # from this image; this preparation container simply exits successfully.
   notebook-image:
-    image: arena-singleuser:5.3.0
+    image: ${ARENA_RUNTIME_IMAGE:-arena-singleuser:cpu-2026.09.1}
     build: ./infra/singleuser
     entrypoint: ['python', '-c', "print('Arena notebook image ready')"]
     network_mode: none
@@ -99,7 +107,7 @@ services:
       NOTEBOOKS_HOST_PATH: ${DATA_ROOT:?Run python scripts/configure_notebooks.py}/notebooks
       ARENA_API_URL: http://api:8000/api
       JUPYTERHUB_API_TOKEN: ${JUPYTERHUB_API_TOKEN:?Run python scripts/configure_notebooks.py first}
-      NOTEBOOK_IMAGE: arena-singleuser:5.3.0
+      NOTEBOOK_IMAGE: ${ARENA_RUNTIME_IMAGE:-arena-singleuser:cpu-2026.09.1}
       DOCKER_NETWORK_NAME: arena-notebooks
     volumes:
       - ${DATA_ROOT:?Run python scripts/configure_notebooks.py}/hub:/data:z

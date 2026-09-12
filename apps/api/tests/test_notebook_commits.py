@@ -59,6 +59,26 @@ def test_fork_is_private_save_is_not_publish_and_success_commits(member, commit_
     assert (
         member.get("/api/code?competition_id=1&filter=your-work").json()["items"] == []
     )
+    from app.models import CompetitionTeam, CompetitionTeamMember, User
+
+    with commit_db() as db:
+        owner = db.get(NotebookCommit, job_id).owner_id
+        team = CompetitionTeam(
+            competition_id=1,
+            owner_id=owner,
+            name="Notebook authors",
+            invite_code="authors-test",
+        )
+        db.add(team)
+        db.flush()
+        db.add(CompetitionTeamMember(competition_id=1, team_id=team.id, user_id=owner))
+        db.add(CompetitionTeamMember(competition_id=1, team_id=team.id, user_id=1))
+        expected_members = list(
+            db.scalars(
+                select(User.username).where(User.id.in_([owner, 1])).order_by(User.id)
+            )
+        )
+        db.commit()
     notebook_commits.complete_commit(
         job_id, document, b"id,prediction\n7,240\n8,100\n9,300\n"
     )
@@ -71,6 +91,25 @@ def test_fork_is_private_save_is_not_publish_and_success_commits(member, commit_
         ]
     ] == [fork]
     assert member.get(path).json()["document"]["cells"] == document["cells"]
+    published = member.get("/api/code?competition_id=1&filter=your-work").json()[
+        "items"
+    ][0]
+    assert published["publisher"]["kind"] == "team"
+    assert published["publisher"]["name"] == "Notebook authors"
+    assert published["publisher"]["members"] == expected_members
+    with commit_db() as db:
+        from sqlalchemy import delete
+
+        db.execute(
+            delete(CompetitionTeamMember).where(CompetitionTeamMember.user_id == 1)
+        )
+        db.commit()
+    assert (
+        member.get("/api/code?competition_id=1&filter=your-work").json()["items"][0][
+            "publisher"
+        ]
+        == published["publisher"]
+    )
     # Completion is idempotent; no duplicate scoring or links.
     notebook_commits.complete_commit(
         job_id, document, b"id,prediction\n7,240\n8,100\n9,300\n"
@@ -284,3 +323,51 @@ def test_cancelled_commit_never_publishes(member, commit_db):
         json={"username": "other", "password": "good-password-123"},
     )
     assert member.post(f"{path}/commits/{job['id']}/cancel").status_code == 404
+
+
+def test_artifact_capture_failure_does_not_publish_or_score(member, monkeypatch):
+    from app.notebook_commits import complete_commit
+    from app.models import NotebookCommit, NotebookPublication, Submission
+    from app import notebook_files
+    from sqlalchemy import select
+
+    member.post("/api/competitions/1/join")
+    notebook = member.post(
+        "/api/notebooks", json={"title": "Atomic commit", "code": "print(1)"}
+    ).json()["id"]
+    queued = member.post(f"/api/code/{notebook}/commits", json={"competition_id": 1})
+    assert queued.status_code == 202
+    job_id = queued.json()["id"]
+    with next(app.dependency_overrides[get_db]()) as db:
+        job = db.get(NotebookCommit, job_id)
+        job.status = "running"
+        document = json.loads(job.document)
+        assert db.get(NotebookPublication, notebook) is None
+        db.commit()
+
+    def fail(*args):
+        raise OSError("Storage unavailable")
+
+    from app import notebook_commits
+
+    with next(app.dependency_overrides[get_db]()) as db:
+        monkeypatch.setattr(
+            notebook_commits,
+            "SessionLocal",
+            sessionmaker(bind=db.get_bind(), expire_on_commit=False),
+        )
+    monkeypatch.setattr(notebook_files, "capture_completed_job", fail)
+    with pytest.raises(OSError):
+        complete_commit(
+            job_id,
+            document,
+            b"id,prediction\n7,240\n8,100\n9,300\n",
+            [("model.bin", b"weights")],
+        )
+    with next(app.dependency_overrides[get_db]()) as db:
+        assert db.get(NotebookCommit, job_id).status == "running"
+        assert db.get(NotebookPublication, notebook) is None
+        assert db.scalar(select(Submission.id).where(Submission.user_id == 2)) is None
+    assert (
+        member.get("/api/code?competition_id=1&filter=your-work").json()["items"] == []
+    )

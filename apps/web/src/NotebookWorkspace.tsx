@@ -1,4 +1,9 @@
+import CellTypeMenu from './CellTypeMenu';
+import NotebookInputPreview, { type InputSelection } from './NotebookInputPreview';
+import { preferredScrollBehavior } from './motion';
+import NotebookDrawers from './NotebookDrawers';
 import NotebookHistory from './NotebookHistory';
+import { parseNotebook } from './notebookImport';
 import CommitNotebook from './CommitNotebook';
 import { notebookHeadings } from './notebookHeadings';
 import PlatformRail from './PlatformRail';
@@ -28,12 +33,13 @@ import {
   Play,
   Plus,
   RotateCcw,
-  Save,
+  History,
+  Users,
   Square,
   Trash2,
 } from 'lucide-react';
 import { api } from './api';
-import NotebookPanel from './NotebookPanel';
+import NotebookPanel, { type Input as NotebookInput } from './NotebookPanel';
 
 const notebookHighlight = syntaxHighlighting(
   HighlightStyle.define([
@@ -157,7 +163,6 @@ export default function NotebookWorkspace({
   onClose,
   onNavigate,
   permanent = false,
-  canPublish = false,
   competitionId,
 }: {
   notebookId: number;
@@ -165,7 +170,7 @@ export default function NotebookWorkspace({
   signIn: () => void;
   draftId?: string;
   autoStart?: boolean;
-  onSaveDraft?: () => Promise<void>;
+  onSaveDraft?: () => Promise<number>;
   onSavingChange?: (saving: boolean) => void;
   initialCode?: string;
   title?: string;
@@ -184,20 +189,24 @@ export default function NotebookWorkspace({
   const [controlling, setControlling] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState('');
+  const [drawer, setDrawer] = useState<'save' | 'share' | null>(null);
   const [savedAt, setSavedAt] = useState('');
-  const [published, setPublished] = useState(false);
+  const [versionRevision, setVersionRevision] = useState(0);
   const [active, setActive] = useState('');
   const [preview, setPreview] = useState<Record<string, boolean>>({});
   const [dark, setDark] = useState(false);
   const [navigationExpanded, setNavigationExpanded] = useState(false);
   const [panel, setPanel] = useState(() => window.innerWidth > 760);
-  const [consoleOpen, setConsoleOpen] = useState(true);
+  const [consoleOpen, setConsoleOpen] = useState(false);
+  const [inputPreview, setInputPreview] = useState<InputSelection | null>(null);
   const [consoleCommand, setConsoleCommand] = useState('');
   const [consoleOutputs, setConsoleOutputs] = useState<Output[]>([]);
   const consoleCell = useRef<Cell>({ ...newCell(), id: 'console' });
   const [menu, setMenu] = useState('');
   const [lineNumbers, setLineNumbers] = useState(false);
   const [help, setHelp] = useState(false);
+  const importInput = useRef<HTMLInputElement>(null);
+  const [importNotice, setImportNotice] = useState('');
   const clipboard = useRef<Cell | null>(null);
   const [hasClipboard, setHasClipboard] = useState(false);
   const menuBar = useRef<HTMLDivElement>(null);
@@ -299,6 +308,7 @@ export default function NotebookWorkspace({
     };
   }, []);
 
+  const savedNotebook = useRef(notebookId);
   async function save() {
     if (state !== 'ready' || runInProgress.current || saveInProgress.current) return false;
     saveInProgress.current = true;
@@ -308,10 +318,12 @@ export default function NotebookWorkspace({
     const snapshot = doc.current;
     try {
       await api(`${base}/document`, { method: 'PUT', body: JSON.stringify(snapshot) });
-      await onSaveDraft?.();
+      savedNotebook.current = (await onSaveDraft?.()) || notebookId;
       if (alive.current) {
         setDirty(doc.current !== snapshot);
         setSavedAt(new Date().toLocaleTimeString());
+        setVersionRevision((value) => value + 1);
+        setImportNotice('');
       }
       return true;
     } catch (e) {
@@ -321,6 +333,40 @@ export default function NotebookWorkspace({
       saveInProgress.current = false;
       if (alive.current) setSaving(false);
       onSavingChange?.(false);
+    }
+  }
+  async function restartServer(restart = true) {
+    if (
+      busy ||
+      !window.confirm(
+        `Save this notebook and ${restart ? 'restart' : 'stop'} your notebook server? All kernels in your workspace will stop. Save other open notebooks first. Saved model files will remain.`,
+      )
+    )
+      return;
+    if (!(await save())) return;
+    setControlling(true);
+    setState('starting');
+    try {
+      await api('/notebook-session', { method: 'DELETE' });
+      const deadline = Date.now() + 60000;
+      while (alive.current) {
+        const session = await api<{ state: string }>('/notebook-session');
+        if (session.state === 'stopped') break;
+        if (Date.now() > deadline)
+          throw new Error('The notebook server is still stopping. Try starting it again shortly.');
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      if (alive.current) {
+        if (restart) await launch();
+        else setState('idle');
+      }
+    } catch (error) {
+      if (alive.current) {
+        setError((error as Error).message);
+        setState('idle');
+      }
+    } finally {
+      if (alive.current) setControlling(false);
     }
   }
   const saveRef = useRef(save);
@@ -517,19 +563,79 @@ export default function NotebookWorkspace({
       if (alive.current) setRunning(null);
     }
   }
-  async function attach(item: { id: number; title: string; filename?: string }) {
-    const { path } = await api<{ path: string }>(`${base}/inputs/${item.id}`, { method: 'POST' });
+  const notebookInputs = (document.metadata.arena_notebook_inputs || []) as {
+    id: number;
+    title: string;
+    filename?: string;
+    kind: 'notebook-output';
+    path: string;
+  }[];
+  const sourceInputs = (document.metadata.arena_input_sources || []) as NotebookInput[];
+  async function attach(item: NotebookInput) {
+    const attached = await api<NotebookInput>(
+      `${base}/input-sources/${item.kind || 'dataset'}/${item.id}`,
+      { method: 'POST' },
+    );
     update((previous) => ({
       ...previous,
-      metadata: { ...previous.metadata, arena_inputs: [...inputs, { ...item, path }] },
+      metadata: {
+        ...previous.metadata,
+        arena_input_sources: [
+          ...sourceInputs.filter(
+            (input) => !(input.id === attached.id && input.kind === attached.kind),
+          ),
+          attached,
+        ],
+      },
     }));
+    const csv = attached.files?.find((file) => file.filename.endsWith('.csv'));
     insert(
       'code',
-      `import pandas as pd\n\n# Arena dataset ${item.id}\ndf = pd.read_csv(${JSON.stringify(path)})\ndf.head()`,
+      `from pathlib import Path\ninput_dir = Path(${JSON.stringify(attached.path)})\nfor input_file in input_dir.rglob('*'):\n    if input_file.is_file():\n        print(input_file)` +
+        (csv
+          ? `\n\nimport pandas as pd\ndf = pd.read_csv(${JSON.stringify(csv.path)})\ndf.head()`
+          : ''),
     );
+  }
+
+  async function removeInput(item: NotebookInput) {
+    if (item.files) {
+      await api(`${base}/remove-input-source`, { method: 'POST', body: JSON.stringify(item) });
+      update((previous) => ({
+        ...previous,
+        metadata: {
+          ...previous.metadata,
+          arena_input_sources: sourceInputs.filter(
+            (input) => !(input.id === item.id && input.kind === item.kind),
+          ),
+        },
+      }));
+    } else {
+      await api(
+        `${base}/legacy-inputs/${item.kind === 'notebook-output' ? 'notebook-output' : 'dataset'}/${item.id}`,
+        { method: 'DELETE' },
+      );
+      update((previous) => ({
+        ...previous,
+        metadata: {
+          ...previous.metadata,
+          arena_inputs: inputs.filter(
+            (input) => item.kind === 'notebook-output' || input.id !== item.id,
+          ),
+          arena_notebook_inputs: notebookInputs.filter(
+            (input) => item.kind !== 'notebook-output' || input.id !== item.id,
+          ),
+        },
+      }));
+    }
   }
   const actions: Record<string, { label: string; action: () => void; disabled?: boolean }[]> = {
     File: [
+      {
+        label: 'Import notebook (.ipynb)',
+        action: () => importInput.current?.click(),
+        disabled: busy,
+      },
       { label: 'Save notebook', action: () => void save(), disabled: busy },
       {
         label: 'Download saved notebook',
@@ -575,6 +681,16 @@ export default function NotebookWorkspace({
         disabled: !running || controlling,
       },
       { label: 'Restart Python kernel', action: () => void control('restart'), disabled: busy },
+      {
+        label: 'Save and stop notebook server',
+        action: () => void restartServer(false),
+        disabled: busy,
+      },
+      {
+        label: 'Save and restart notebook server',
+        action: () => void restartServer(),
+        disabled: busy,
+      },
     ],
     Settings: [
       { label: dark ? 'Use light theme' : 'Use dark theme', action: () => setDark(!dark) },
@@ -587,6 +703,66 @@ export default function NotebookWorkspace({
       className={`arena-notebook ${dark ? 'arena-notebook-dark' : ''} ${navigationExpanded ? 'navigation-expanded' : ''}`}
       aria-label="Arena notebook editor"
     >
+      <input
+        ref={importInput}
+        type="file"
+        accept=".ipynb"
+        aria-label="Import notebook file"
+        hidden
+        onChange={async (event) => {
+          const file = event.target.files?.[0];
+          event.target.value = '';
+          if (!file || busy) return;
+          setError('');
+          setControlling(true);
+          try {
+            if (!file.name.toLowerCase().endsWith('.ipynb'))
+              throw new Error('Choose an .ipynb file.');
+            if (file.size > 10 * 1024 * 1024)
+              throw new Error('Notebook files must be 10 MB or smaller.');
+            const snapshot = parseNotebook(await file.text());
+            if (!alive.current) return;
+            if (
+              !window.confirm(
+                'Replace the current notebook contents? Unsaved edits will be lost. The imported notebook will not run until you run it.',
+              )
+            )
+              return;
+            update(() => snapshot);
+            setActive(snapshot.cells[0]?.id || '');
+            setPreview(
+              Object.fromEntries(
+                snapshot.cells
+                  .filter((cell) => cell.cell_type === 'markdown')
+                  .map((cell) => [cell.id, true]),
+              ),
+            );
+            setImportNotice(
+              'Notebook imported. Save to keep it. Attach any required datasets before running cells.',
+            );
+          } catch (e) {
+            setError((e as Error).message);
+          } finally {
+            setControlling(false);
+          }
+        }}
+      />
+      {drawer && (
+        <NotebookDrawers
+          mode={drawer}
+          close={() => setDrawer(null)}
+          id={notebookId}
+          competitionId={competitionId}
+          changed={() => setVersionRevision((value) => value + 1)}
+          save={async (label) => {
+            update((previous) => ({
+              ...previous,
+              metadata: { ...previous.metadata, arena_version: label },
+            }));
+            return (await save()) ? savedNotebook.current : false;
+          }}
+        />
+      )}
       <PlatformRail
         expanded={navigationExpanded}
         toggle={() => setNavigationExpanded(!navigationExpanded)}
@@ -608,98 +784,98 @@ export default function NotebookWorkspace({
       />
       <header className="notebook-topbar new-notebook-header">
         <div className="notebook-title-row">
-          {onTitleChange ? (
-            <input
-              aria-label="Notebook title"
-              value={title}
-              maxLength={160}
-              minLength={3}
-              onChange={(event) => {
-                onTitleChange(event.target.value);
-                setDirty(true);
-              }}
-            />
-          ) : (
-            <h1>{title}</h1>
-          )}
-          <span className="notebook-save-state">
-            {dirty
-              ? 'Unsaved changes'
-              : savedAt
-                ? 'Saved permanently'
-                : draftId
-                  ? 'Temporary draft'
-                  : 'Private working copy'}
-          </span>
-          <button
-            className="notebook-save-button"
-            aria-label="Save"
-            disabled={busy}
-            onClick={() => void save()}
-          >
-            <Save size={17} />
-            {saving ? 'Saving…' : 'Save notebook'}
-            <span>{permanent || savedAt ? '✓' : '0'}</span>
-          </button>
-          {notebookId > 0 && (
-            <NotebookHistory
-              id={notebookId}
-              disabled={busy}
-              restore={(snapshot) => {
-                doc.current = snapshot;
-                setDocument(snapshot);
-                setDirty(true);
-                setActive(snapshot.cells[0]?.id || '');
-              }}
-            />
-          )}
-          {competitionId && notebookId > 0 && (
-            <CommitNotebook
-              notebookId={notebookId}
-              competitionId={competitionId}
-              save={save}
-              close={onClose}
-              disabled={busy}
-            />
-          )}
-          {competitionId && !notebookId && (
-            <span className="muted">Save to enable competition commit</span>
-          )}
-          {canPublish && notebookId > 0 && !competitionId && (
+          <div className="notebook-identity">
+            {onTitleChange ? (
+              <input
+                aria-label="Notebook title"
+                value={title}
+                maxLength={160}
+                minLength={3}
+                onChange={(event) => {
+                  onTitleChange(event.target.value);
+                  setDirty(true);
+                }}
+              />
+            ) : (
+              <h1>{title}</h1>
+            )}
+            <span className="notebook-save-state">
+              {dirty
+                ? 'Unsaved changes'
+                : savedAt
+                  ? 'Saved permanently'
+                  : draftId
+                    ? 'Temporary draft'
+                    : 'Private working copy'}
+            </span>
+          </div>
+          <div className="notebook-header-actions">
             <button
-              className="button secondary"
-              disabled={busy || state !== 'ready'}
-              onClick={async () => {
-                setSaving(true);
-                setError('');
-                try {
-                  await api(`/code/${notebookId}/publication`, {
-                    method: 'PUT',
-                    body: JSON.stringify(doc.current),
-                  });
-                  setPublished(true);
-                } catch (e) {
-                  setError((e as Error).message);
-                } finally {
-                  setSaving(false);
-                }
-              }}
+              disabled={busy || notebookId <= 0}
+              title={notebookId <= 0 ? 'Save a version before sharing' : 'Share notebook'}
+              onClick={() => setDrawer('share')}
             >
-              Publish code and outputs
+              <Users size={18} /> Share
             </button>
-          )}
-          {published && <a href={`#code/${notebookId}`}>View published code</a>}
-          {onClose && (
-            <button
-              className="notebook-close"
-              aria-label="Close notebook editor"
-              disabled={saving}
-              onClick={onClose}
-            >
-              <X size={21} />
-            </button>
-          )}
+            <div className="notebook-save-version">
+              <button
+                className="notebook-save-button"
+                aria-label="Save"
+                disabled={busy}
+                onClick={() => setDrawer('save')}
+              >
+                <History size={18} />
+                {saving ? 'Saving…' : 'Save Version'}
+              </button>
+              <NotebookHistory
+                id={notebookId}
+                revision={versionRevision}
+                disabled={busy}
+                restore={(snapshot) => {
+                  doc.current = snapshot;
+                  setDocument(snapshot);
+                  setDirty(true);
+                  setActive(snapshot.cells[0]?.id || '');
+                  setPreview(
+                    Object.fromEntries(
+                      snapshot.cells
+                        .filter((cell) => cell.cell_type === 'markdown')
+                        .map((cell) => [cell.id, true]),
+                    ),
+                  );
+                }}
+              />
+            </div>
+            {competitionId && notebookId > 0 && (
+              <CommitNotebook
+                statusOnly
+                notebookId={notebookId}
+                competitionId={competitionId}
+                save={save}
+                close={onClose}
+                disabled={busy}
+              />
+            )}
+            {competitionId && !notebookId && (
+              <span className="muted">Save to enable competition commit</span>
+            )}
+            {onClose && (
+              <button
+                className="notebook-close"
+                aria-label="Close notebook editor"
+                disabled={saving}
+                onClick={onClose}
+              >
+                <X size={21} />
+              </button>
+            )}
+          </div>
         </div>
+        {importNotice && (
+          <p className="notebook-import-notice" role="status">
+            {importNotice}
+          </p>
+        )}
         <div className="notebook-menubar" ref={menuBar}>
           {Object.entries(actions).map(([name, entries]) => (
             <div className="notebook-menu" key={name}>
@@ -732,7 +908,9 @@ export default function NotebookWorkspace({
         </div>
       </header>
       <div className={`notebook-body ${panel ? '' : 'notebook-panel-hidden'}`}>
-        <div className="notebook-main">
+        <div
+          className={`notebook-main${inputPreview && consoleOpen ? ' notebook-panels-stacked' : ''}`}
+        >
           <header className="arena-notebook-toolbar">
             <button
               aria-label="Add code cell"
@@ -780,22 +958,13 @@ export default function NotebookWorkspace({
               <ChevronsRight size={22} /> Run All
             </button>
             <span className="notebook-tool-divider" />
-            <select
-              aria-label="Cell type"
+            <CellTypeMenu
               value={selected?.cell_type || 'code'}
-              disabled={busy}
-              onChange={(event) =>
-                changeCell(selected.id, {
-                  cell_type: event.target.value as Cell['cell_type'],
-                  outputs: [],
-                  execution_count: null,
-                })
+              disabled={busy || !selected}
+              onChange={(cell_type) =>
+                changeCell(selected.id, { cell_type, outputs: [], execution_count: null })
               }
-            >
-              <option value="code">Code</option>
-              <option value="markdown">Markdown</option>
-              <option value="raw">Raw</option>
-            </select>
+            />
             <span className="native-kernel">
               <span
                 className={`kernel-dot ${running ? 'busy' : state === 'ready' ? 'online' : ''}`}
@@ -1006,6 +1175,9 @@ export default function NotebookWorkspace({
               </button>
             </div>
           </div>
+          {inputPreview && (
+            <NotebookInputPreview selection={inputPreview} close={() => setInputPreview(null)} />
+          )}
           {consoleOpen && (
             <section className="notebook-console" aria-label="Python console">
               <header>
@@ -1062,7 +1234,9 @@ export default function NotebookWorkspace({
             <div>
               <button
                 aria-label="Toggle Python console"
-                onClick={() => setConsoleOpen(!consoleOpen)}
+                onClick={() => {
+                  setConsoleOpen(!consoleOpen);
+                }}
               >
                 <Terminal size={18} />
               </button>
@@ -1087,7 +1261,17 @@ export default function NotebookWorkspace({
         {panel && (
           <NotebookPanel
             close={() => setPanel(false)}
-            inputs={inputs}
+            revision={versionRevision}
+            inputs={[...inputs, ...notebookInputs, ...sourceInputs]}
+            remove={async (item) => {
+              await removeInput(item);
+              if (inputPreview?.source.id === item.id && inputPreview?.source.kind === item.kind)
+                setInputPreview(null);
+            }}
+            preview={(source, file) => {
+              setInputPreview({ source, file });
+              if (window.innerWidth <= 760) setPanel(false);
+            }}
             attach={attach}
             headings={headings}
             jump={(id) => {
@@ -1104,7 +1288,7 @@ export default function NotebookWorkspace({
                   )[heading.index];
                 if (target) {
                   target.tabIndex = -1;
-                  target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+                  target.scrollIntoView({ block: 'start', behavior: preferredScrollBehavior() });
                   target.focus({ preventScroll: true });
                 }
               });

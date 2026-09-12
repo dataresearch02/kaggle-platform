@@ -1,3 +1,6 @@
+import ResourcePage from './ResourcePage';
+import BenchmarkHub from './BenchmarkHub';
+import DiscussionsPage from './DiscussionsPage';
 import AccountMenu from './AccountMenu';
 import AccountPage, { accountRouteFromHash } from './AccountPage';
 import Sidebar from './Sidebar';
@@ -119,21 +122,41 @@ function codeRouteFromHash() {
 }
 
 function competitionRouteFromHash() {
-  const match = location.hash.match(/^#competitions\/(\d+)(?:\/([a-z]+))?$/);
+  const match = location.hash.match(/^#competitions\/(\d+)(?:\/([a-z]+))?(?:\/(\d+))?$/);
   if (!match) return null;
   return {
     id: Number(match[1]),
+    discussionId: match[2] === 'discussion' && match[3] ? Number(match[3]) : undefined,
     tab: competitionTabs.includes(match[2] as CompetitionTab)
       ? (match[2] as CompetitionTab)
       : ('overview' as CompetitionTab),
   };
 }
 
+function resourceRouteFromHash() {
+  const match = location.hash.match(/^#(datasets|models)\/(\d+)$/);
+  return match ? { kind: match[1] as 'datasets' | 'models', id: Number(match[2]) } : null;
+}
+function workRouteFromHash(): WorkKind | 'all' | null {
+  const match = location.hash.match(
+    /^#work(?:\/(datasets|models|notebooks|competitions|benchmarks))?$/,
+  );
+  return match ? (match[1] as WorkKind) || 'all' : null;
+}
+
 export default function App() {
+  const [resourceRoute, setResourceRoute] = useState(resourceRouteFromHash);
   const [accountRoute, setAccountRoute] = useState(accountRouteFromHash);
   const [accountRevision, setAccountRevision] = useState(0);
   const [page, setPage] = useState<Page>(() => {
-    const p = location.hash.slice(1);
+    const p =
+      resourceRouteFromHash()?.kind ||
+      (workRouteFromHash() ? 'work' : null) ||
+      (location.hash.startsWith('#benchmarks/')
+        ? 'benchmarks'
+        : /^#discussions\/\d+$/.test(location.hash)
+          ? 'discussions'
+          : location.hash.slice(1));
     return codeRouteFromHash()
       ? 'notebooks'
       : competitionRouteFromHash()
@@ -169,7 +192,7 @@ export default function App() {
   const [work, setWork] = useState<WorkItem[]>([]);
   const [workLoading, setWorkLoading] = useState(false);
   const [workError, setWorkError] = useState('');
-  const [workFilter, setWorkFilter] = useState<WorkKind | 'all'>('all');
+  const [workFilter, setWorkFilter] = useState<WorkKind | 'all'>(workRouteFromHash() || 'all');
   const [workSelection, setWorkSelection] = useState<WorkKind>('notebooks');
   useEffect(() => {
     let active = true;
@@ -214,6 +237,9 @@ export default function App() {
       .then(setUser)
       .catch(() => {});
     const handler = () => {
+      setResourceRoute(resourceRouteFromHash());
+      const workRoute = workRouteFromHash();
+      if (workRoute) setWorkFilter(workRoute);
       const account = accountRouteFromHash();
       setAccountRoute(account);
       if (account) {
@@ -243,7 +269,14 @@ export default function App() {
         setMobile(false);
         return;
       }
-      const p = location.hash.slice(1);
+      const p =
+        resourceRouteFromHash()?.kind ||
+        (workRouteFromHash() ? 'work' : null) ||
+        (location.hash.startsWith('#benchmarks/')
+          ? 'benchmarks'
+          : /^#discussions\/\d+$/.test(location.hash)
+            ? 'discussions'
+            : location.hash.slice(1));
       if (nav.some((n) => n.id === p)) {
         setPage(p as Page);
         if (dataHubPages.includes(p as Page)) setDataHubOpen(true);
@@ -259,7 +292,16 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handler);
   }, []);
   useEffect(() => {
-    if (page === 'work' || page === 'notebooks' || competitionRoute || codeRoute) return;
+    if (
+      page === 'work' ||
+      page === 'notebooks' ||
+      page === 'discussions' ||
+      page === 'benchmarks' ||
+      resourceRoute ||
+      competitionRoute ||
+      codeRoute
+    )
+      return;
     let active = true;
     setLoading(true);
     setError('');
@@ -307,6 +349,7 @@ export default function App() {
     query,
     revision,
     competitionRoute?.id,
+    resourceRoute?.id,
     codeRoute?.id,
     competitionStatus,
     competitionCategory,
@@ -333,7 +376,12 @@ export default function App() {
     return () => window.removeEventListener('arena-create', handler);
   }, [user]);
 
-  function go(next: Page) {
+  function openWork(kind: WorkKind) {
+    go('work', `work/${kind}`);
+    setWorkFilter(kind);
+  }
+  function go(next: Page, fragment: string = next) {
+    setResourceRoute(null);
     setAccountRoute(null);
     setCodeRoute(null);
     setCompetitionRoute(null);
@@ -342,7 +390,7 @@ export default function App() {
     setCompetitionSort('newest');
     if (dataHubPages.includes(next)) setDataHubOpen(true);
     if (morePages.includes(next)) setMoreOpen(true);
-    location.hash = next;
+    location.hash = fragment;
     setPage(next);
     setSelected(null);
     setCreating(false);
@@ -358,6 +406,10 @@ export default function App() {
     setNotice(message);
   }
   async function open(item: Item) {
+    if (page === 'datasets' || page === 'models') {
+      location.hash = `${page}/${item.id}`;
+      return;
+    }
     if (page === 'notebooks') {
       location.hash = `code/${item.id}${user?.id === item.owner_id ? '/edit' : ''}`;
       return;
@@ -367,11 +419,7 @@ export default function App() {
       return;
     }
     try {
-      setSelected(
-        page === 'datasets' || page === 'benchmarks'
-          ? await api<Item>(`/${page}/${item.id}`)
-          : item,
-      );
+      setSelected(page === 'benchmarks' ? await api<Item>(`/${page}/${item.id}`) : item);
     } catch (e) {
       setNotice((e as Error).message);
     }
@@ -406,7 +454,10 @@ export default function App() {
             <Menu />
           </button>
           <div className="breadcrumb">
-            {dataHubPages.includes(page) ? 'Data Hub' : 'Workspace'} <ChevronRight size={14} />
+            <span className="breadcrumb-parent">
+              {dataHubPages.includes(page) ? 'Data Hub' : 'Workspace'}
+            </span>
+            <ChevronRight size={14} />
             <span>{accountRoute ? 'Your account' : nav.find((n) => n.id === page)?.label}</span>
           </div>
           <div className="account">
@@ -454,6 +505,8 @@ export default function App() {
               updated={() => setAccountRevision((value) => value + 1)}
               signIn={() => setAuth('login')}
             />
+          ) : page === 'discussions' ? (
+            <DiscussionsPage user={user} signIn={() => setAuth('login')} query={query} />
           ) : codeRoute ? (
             <CodePage
               key={`${codeRoute.id}-${codeRoute.edit}-${user?.id}`}
@@ -469,6 +522,7 @@ export default function App() {
               key={competitionRoute.id}
               id={competitionRoute.id}
               tab={competitionRoute.tab}
+              discussionId={competitionRoute.discussionId}
               setTab={(tab) => {
                 location.hash = `competitions/${competitionRoute.id}/${tab}`;
               }}
@@ -476,17 +530,33 @@ export default function App() {
               signIn={() => setAuth('login')}
               back={() => go('competitions')}
             />
+          ) : resourceRoute ? (
+            <ResourcePage
+              key={`${resourceRoute.kind}-${resourceRoute.id}`}
+              {...resourceRoute}
+              user={user}
+              signIn={() => setAuth('login')}
+              yourWork={() => openWork(resourceRoute.kind)}
+            />
           ) : page === 'work' ? (
             <YourWork
-              key={`${user?.id}-${workFilter}`}
+              key={user?.id}
               items={work}
               loading={workLoading}
               error={workError}
               signedIn={!!user}
               signIn={() => setAuth('login')}
-              initialFilter={workFilter}
+              filter={workFilter}
               refresh={() => changed('Your work updated')}
               open={(item) => {
+                if (item.work_resource === 'benchmark-collections') {
+                  location.hash = `benchmarks/${item.id}`;
+                  return;
+                }
+                if (item.work_kind === 'datasets' || item.work_kind === 'models') {
+                  location.hash = `${item.work_kind}/${item.id}`;
+                  return;
+                }
                 if (item.work_kind === 'notebooks') {
                   location.hash = `code/${item.id}/edit`;
                   return;
@@ -501,6 +571,21 @@ export default function App() {
                     .then(setSelected)
                     .catch((e) => setNotice(e.message));
                 } else setSelected(item);
+              }}
+            />
+          ) : page === 'benchmarks' ? (
+            <BenchmarkHub
+              yourWork={() => {
+                openWork('benchmarks');
+              }}
+              user={user}
+              signIn={() => setAuth('login')}
+              creating={creating}
+              closeCreate={() => setCreating(false)}
+              openLegacy={(row) => {
+                void api<Item>(`/benchmarks/${row.id}`)
+                  .then(setSelected)
+                  .catch((e) => setNotice(e.message));
               }}
             />
           ) : page === 'notebooks' ? (
@@ -624,15 +709,11 @@ export default function App() {
                         <Plus size={17} />
                         {page === 'competitions'
                           ? 'Create competition'
-                          : page === 'benchmarks'
-                            ? 'Create benchmark'
-                            : page === 'datasets'
-                              ? 'Upload dataset'
-                              : page === 'models'
-                                ? 'Add model card'
-                                : page === 'discussions'
-                                  ? 'New discussion'
-                                  : 'New notebook'}
+                          : page === 'datasets'
+                            ? 'Upload dataset'
+                            : page === 'models'
+                              ? 'Add model card'
+                              : 'New notebook'}
                       </button>
                     )}
                   </div>
@@ -643,8 +724,7 @@ export default function App() {
                       <button
                         className="button secondary"
                         onClick={() => {
-                          setWorkFilter(page as WorkKind);
-                          go('work');
+                          openWork(page as WorkKind);
                         }}
                       >
                         Your work <ArrowRight size={14} />
@@ -747,7 +827,7 @@ export default function App() {
                   <p>Try another search or create the first entry.</p>
                 </div>
               ) : (
-                <div className={`card-grid ${page === 'discussions' ? 'list-grid' : ''}`}>
+                <div className="card-grid">
                   {items.map((item, index) => (
                     <Card
                       key={item.id}
@@ -809,7 +889,7 @@ export default function App() {
           saved={() => changed('Notebook saved permanently')}
         />
       )}
-      {creating && page !== 'notebooks' && (
+      {creating && page !== 'notebooks' && page !== 'benchmarks' && (
         <CreatePage
           key={page}
           page={page}

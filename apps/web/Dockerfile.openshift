@@ -1,0 +1,9 @@
+ARG ARENA_WEB_IMAGE=arena_web:latest
+FROM ${ARENA_WEB_IMAGE}
+USER root
+RUN sed -i 's/listen 80;/listen 8080;/' /etc/nginx/conf.d/default.conf \
+    && sed -i '/^user /d; s@/var/run/nginx.pid@/tmp/nginx.pid@; s@/run/nginx.pid@/tmp/nginx.pid@' /etc/nginx/nginx.conf \
+    && chgrp -R 0 /etc/nginx /var/cache/nginx /var/log/nginx \
+    && chmod -R g=u /etc/nginx /var/cache/nginx /var/log/nginx
+USER 10001
+EXPOSE 8080

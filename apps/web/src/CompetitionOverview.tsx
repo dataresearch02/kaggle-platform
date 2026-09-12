@@ -1,9 +1,11 @@
+import Markdown from './Markdown';
 import { useEffect, useState } from 'react';
 import { api } from './api';
 
 export type Overview = {
   starts_at: string | null;
-  ends_at: string;
+  ends_at: string | null;
+  source_pages?: Record<string, string>;
   prize: string;
   description: string;
   prize_details: string;
@@ -152,7 +154,7 @@ export default function CompetitionOverview({
                     : 'Start date not specified'}
                 </dd>
                 <dt>Submission deadline</dt>
-                <dd>{new Date(data.ends_at).toLocaleString()}</dd>
+                <dd>{data.ends_at ? new Date(data.ends_at).toLocaleString() : 'Ongoing'}</dd>
               </dl>
             </section>
             <section>
@@ -165,15 +167,21 @@ export default function CompetitionOverview({
           </div>
           <section>
             <h3>How to participate</h3>
-            <p className="competition-description">
+            <Markdown>
               {data.getting_started ||
                 'Join, explore the data, train a model, and submit predictions on Leaderboard.'}
-            </p>
+            </Markdown>
           </section>
           <section>
             <h3>Evaluation · {data.metric}</h3>
-            <p className="competition-description">{data.evaluation}</p>
+            <Markdown>{data.evaluation}</Markdown>
           </section>
+          {data.source_pages?.['frequently asked questions'] && (
+            <section>
+              <h3>Frequently asked questions · Kaggle</h3>
+              <Markdown>{data.source_pages['frequently asked questions']}</Markdown>
+            </section>
+          )}
         </>
       )}
     </>

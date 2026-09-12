@@ -10,7 +10,7 @@ export const workKinds = {
   benchmarks: 'Benchmarks',
 };
 export type WorkKind = keyof typeof workKinds;
-export type WorkItem = Item & { work_kind: WorkKind; created_at?: string };
+export type WorkItem = Item & { work_kind: WorkKind; work_resource?: string; created_at?: string };
 function DeleteWorkDialog({
   item,
   close,
@@ -35,7 +35,7 @@ function DeleteWorkDialog({
     setBusy(true);
     setError('');
     try {
-      await api(`/work/${item.work_kind}/${item.id}`, { method: 'DELETE' });
+      await api(`/work/${item.work_resource || item.work_kind}/${item.id}`, { method: 'DELETE' });
       deleted();
     } catch (e) {
       setError((e as Error).message);
@@ -58,13 +58,15 @@ function DeleteWorkDialog({
       </p>
       <p>This permanently removes the item from Your work and Explore.</p>
       <p>
-        {item.work_kind === 'datasets'
-          ? 'The uploaded CSV will be deleted. Copies already attached to notebooks or downloaded will remain.'
-          : item.work_kind === 'notebooks'
-            ? 'Your saved notebook file will be deleted when its runtime is available. Linked draft editors will expire. Other users’ private copies and downloaded copies will remain.'
-            : item.work_kind === 'models'
-              ? 'This deletes the model card. The externally hosted model is not affected.'
-              : 'Its test data, answers, entries, submissions and leaderboard will also be deleted.'}
+        {item.work_resource === 'benchmark-collections'
+          ? 'Its evaluation history and stored run files will be deleted. Reusable tasks and models will remain.'
+          : item.work_kind === 'datasets'
+            ? 'The uploaded CSV will be deleted. Copies already attached to notebooks or downloaded will remain.'
+            : item.work_kind === 'notebooks'
+              ? 'Your saved notebook file will be deleted when its runtime is available. Linked draft editors will expire. Other users’ private copies and downloaded copies will remain.'
+              : item.work_kind === 'models'
+                ? 'This deletes the model card. The externally hosted model is not affected.'
+                : 'Its test data, answers, entries, submissions and leaderboard will also be deleted.'}
       </p>
       {error && (
         <p className="error" role="alert">
@@ -91,7 +93,7 @@ export default function YourWork({
   signIn,
   open,
   refresh,
-  initialFilter,
+  filter,
 }: {
   items: WorkItem[];
   loading: boolean;
@@ -100,9 +102,8 @@ export default function YourWork({
   signIn: () => void;
   open: (item: WorkItem) => void;
   refresh: () => void;
-  initialFilter: WorkKind | 'all';
+  filter: WorkKind | 'all';
 }) {
-  const [filter, setFilter] = useState<WorkKind | 'all'>(initialFilter);
   const [query, setQuery] = useState('');
   const [deleting, setDeleting] = useState<WorkItem | null>(null);
   const [editing, setEditing] = useState<WorkItem | null>(null);
@@ -126,7 +127,7 @@ export default function YourWork({
     setSaving(true);
     setSaveError('');
     try {
-      await api(`/work/${editing.work_kind}/${editing.id}`, {
+      await api(`/work/${editing.work_resource || editing.work_kind}/${editing.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ title: editing.title, description: editing.description || '' }),
       });
@@ -160,7 +161,13 @@ export default function YourWork({
         <>
           <div className="work-tabs" aria-label="Filter your work">
             {(['all', ...Object.keys(workKinds)] as (WorkKind | 'all')[]).map((kind) => (
-              <button key={kind} aria-pressed={filter === kind} onClick={() => setFilter(kind)}>
+              <button
+                key={kind}
+                aria-pressed={filter === kind}
+                onClick={() => {
+                  location.hash = kind === 'all' ? 'work' : `work/${kind}`;
+                }}
+              >
                 {kind === 'all' ? 'All work' : workKinds[kind]}
                 <span>
                   {items.filter((item) => kind === 'all' || item.work_kind === kind).length}
@@ -199,7 +206,10 @@ export default function YourWork({
           ) : (
             <div className="work-list">
               {filtered.map((item) => (
-                <article className="work-row" key={`${item.work_kind}-${item.id}`}>
+                <article
+                  className="work-row"
+                  key={`${item.work_resource || item.work_kind}-${item.id}`}
+                >
                   <div className="work-row-info">
                     <small>
                       {workKinds[item.work_kind]} ·{' '}
@@ -246,7 +256,7 @@ export default function YourWork({
                             ? 'Download published code notebook'
                             : 'Download dataset'
                         }
-                        href={`/api/${item.work_kind}/${item.id}/download`}
+                        href={`/api/${item.work_resource || item.work_kind}/${item.id}/download`}
                       >
                         <Download size={18} />
                       </a>

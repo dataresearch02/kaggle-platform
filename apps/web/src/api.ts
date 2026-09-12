@@ -11,6 +11,10 @@ export type Item = {
   filename?: string;
   category?: string;
   metric?: string;
+  evaluation_available?: boolean;
+  source_url?: string;
+  rules_url?: string;
+  rules_content?: string;
   prize?: string;
   deadline?: string;
   code?: string;

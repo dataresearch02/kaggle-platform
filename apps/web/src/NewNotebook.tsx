@@ -7,10 +7,12 @@ export default function NewNotebook({
   close,
   saved,
   competitionId,
+  inputSource,
 }: {
   close: () => void;
   saved: () => void;
   competitionId?: number;
+  inputSource?: { kind: 'dataset' | 'model'; id: number };
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const draft = useRef<string | undefined>(undefined);
@@ -37,10 +39,13 @@ export default function NewNotebook({
     };
     const discard = () => remove(draft.current);
     window.addEventListener('pagehide', discard);
-    void api<{ id: string }>(
-      `/notebook-drafts${competitionId ? `?competition_id=${competitionId}` : ''}`,
-      { method: 'POST' },
-    )
+    const parameters = new URLSearchParams();
+    if (competitionId) parameters.set('competition_id', String(competitionId));
+    if (inputSource) {
+      parameters.set('source_kind', inputSource.kind);
+      parameters.set('source_id', String(inputSource.id));
+    }
+    void api<{ id: string }>(`/notebook-drafts?${parameters}`, { method: 'POST' })
       .then(({ id }) => {
         if (alive) {
           draft.current = id;
@@ -76,6 +81,7 @@ export default function NewNotebook({
       setPermanent(true);
       setError('');
       saved();
+      return notebook.id;
     } finally {
       setSaving(false);
     }

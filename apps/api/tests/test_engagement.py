@@ -2,7 +2,14 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    "kind", ["notebook-comment", "discussion-comment", "discussion", "competition-post"]
+    "kind",
+    [
+        "notebook-comment",
+        "discussion-comment",
+        "discussion",
+        "competition-post",
+        "competition-comment",
+    ],
 )
 def test_replies_and_reactions_are_persistent_scoped_and_owned(member, kind):
     if kind == "notebook-comment":
@@ -20,12 +27,17 @@ def test_replies_and_reactions_are_persistent_scoped_and_owned(member, kind):
         target = member.post(
             f"/api/code/{notebook['id']}/comments", json={"body": "Original comment"}
         ).json()
-    elif kind == "competition-post":
+    elif kind in ("competition-post", "competition-comment"):
         member.post("/api/competitions/1/join")
         target = member.post(
             "/api/competitions/1/discussion",
             json={"title": "Threaded post", "body": "Original post"},
         ).json()
+        if kind == "competition-comment":
+            target = member.post(
+                f"/api/competition-discussions/{target['id']}/comments",
+                json={"body": "Original comment"},
+            ).json()
     else:
         target = member.post(
             "/api/discussions",
@@ -67,3 +79,44 @@ def test_replies_and_reactions_are_persistent_scoped_and_owned(member, kind):
     assert len(member.get(path).json()["replies"]) == 1
     assert member.get(f"/api/engagement/{kind}/999999").status_code == 404
     assert member.put(path + "/reactions/unknown").status_code == 422
+
+
+def test_deleting_comment_cleans_nested_replies(member):
+    from app.db import get_db
+    from app.main import app
+    from contextlib import contextmanager
+    from app.models import ContentReply, ContentReaction
+    from sqlalchemy import select
+
+    post = member.post(
+        "/api/competitions/1/discussion",
+        json={"title": "Replies topic", "body": "Topic body"},
+    ).json()
+    comment = member.post(
+        f"/api/competition-discussions/{post['id']}/comments", json={"body": "Parent"}
+    ).json()
+    base = f"/api/engagement/competition-comment/{comment['id']}"
+    child = member.post(base + "/replies", json={"body": "Child"}).json()
+    member.put(base + "/reactions/like")
+    assert (
+        member.get(f"/api/engagement/competition-comment/{child['id']}").status_code
+        == 404
+    )
+    assert (
+        member.delete(
+            f"/api/engagement/competition-post/{post['id']}/replies/{comment['id']}"
+        ).status_code
+        == 204
+    )
+    assert member.get(base).status_code == 404
+    with contextmanager(app.dependency_overrides[get_db])() as db:
+        assert db.get(ContentReply, child["id"]) is None
+        assert (
+            db.scalar(
+                select(ContentReaction).where(
+                    ContentReaction.target_kind == "competition-comment",
+                    ContentReaction.target_id == comment["id"],
+                )
+            )
+            is None
+        )

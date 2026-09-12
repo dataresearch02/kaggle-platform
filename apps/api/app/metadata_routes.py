@@ -42,6 +42,9 @@ def overview_data(db, id):
     competition = db.get(Competition, id)
     if not competition:
         raise HTTPException(404, "Competition not found")
+    from .models import CompetitionSource
+
+    source = db.get(CompetitionSource, id)
     overview = db.get(CompetitionOverview, id)
     fields = (
         "starts_at",
@@ -52,10 +55,11 @@ def overview_data(db, id):
     )
     return {
         **{key: getattr(overview, key, None) for key in fields},
-        "ends_at": competition.deadline,
+        "ends_at": None if source and source.ongoing else competition.deadline,
         "prize": competition.prize,
         "description": competition.description,
         "metric": competition.metric,
+        "source_pages": json.loads(source.pages_json) if source else {},
     }
 
 

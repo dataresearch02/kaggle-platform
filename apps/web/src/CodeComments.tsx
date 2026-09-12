@@ -8,7 +8,9 @@ export default function CodeComments({
   id,
   user,
   signIn,
+  allowComments = true,
 }: {
+  allowComments?: boolean;
   id: number;
   user: User | null;
   signIn: () => void;
@@ -46,7 +48,9 @@ export default function CodeComments({
           {error}
         </p>
       )}
-      {user ? (
+      {!allowComments ? (
+        <p>Comments are disabled for this notebook.</p>
+      ) : user ? (
         <form
           onSubmit={async (event) => {
             event.preventDefault();

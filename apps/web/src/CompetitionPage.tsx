@@ -1,5 +1,7 @@
+import DiscussionList from './DiscussionList';
+import DiscussionThread from './DiscussionThread';
+import Markdown from './Markdown';
 import CompetitionTeam from './CompetitionTeam';
-import Engagement from './Engagement';
 import { useEffect, useState } from 'react';
 import { ArrowLeft, Trophy, Users, Calendar, Check, ArrowUpRight } from 'lucide-react';
 import { api, type Item, type User } from './api';
@@ -20,11 +22,11 @@ export const competitionTabs = [
   'submissions',
 ] as const;
 export type CompetitionTab = (typeof competitionTabs)[number];
-type Post = { id: number; title: string; body: string; owner: string; created_at: string };
 type Submission = { id: number; filename: string; score: number; created_at: string };
 export default function CompetitionPage({
   id,
   tab,
+  discussionId,
   setTab,
   user,
   signIn,
@@ -32,6 +34,7 @@ export default function CompetitionPage({
 }: {
   id: number;
   tab: CompetitionTab;
+  discussionId?: number;
   setTab: (tab: CompetitionTab) => void;
   user: User | null;
   signIn: () => void;
@@ -41,7 +44,6 @@ export default function CompetitionPage({
   const [joined, setJoined] = useState(false);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [resources, setResources] = useState<Item[]>([]);
-  const [posts, setPosts] = useState<Post[]>([]);
   const [owned, setOwned] = useState<WorkItem[]>([]);
   const [resourceId, setResourceId] = useState('');
   const [loading, setLoading] = useState(true);
@@ -81,27 +83,22 @@ export default function CompetitionPage({
   useEffect(() => {
     let alive = true;
     setResources([]);
-    setPosts([]);
     setOwned([]);
     setResourceId('');
     setTabLoading(true);
     const kind = 'models';
     const request =
-      tab === 'discussion'
-        ? api<Post[]>(`${base}/discussion`).then((rows) => {
-            if (alive) setPosts(rows);
+      tab === 'models'
+        ? Promise.all([
+            api<Item[]>(`${base}/resources/${kind}`),
+            user ? api<WorkItem[]>('/work') : Promise.resolve([]),
+          ]).then(([rows, work]) => {
+            if (alive) {
+              setResources(rows);
+              setOwned(work.filter((row) => row.work_kind === kind));
+            }
           })
-        : tab === 'models'
-          ? Promise.all([
-              api<Item[]>(`${base}/resources/${kind}`),
-              user ? api<WorkItem[]>('/work') : Promise.resolve([]),
-            ]).then(([rows, work]) => {
-              if (alive) {
-                setResources(rows);
-                setOwned(work.filter((row) => row.work_kind === kind));
-              }
-            })
-          : Promise.resolve();
+        : Promise.resolve();
     request
       .catch((e) => {
         if (alive) setError(e.message);
@@ -304,68 +301,18 @@ export default function CompetitionPage({
             )}
           </>
         )}
-        {tab === 'discussion' && (
-          <>
-            <h2>Discussion</h2>
-            <p>Ask questions and share insights about this competition.</p>
-            {user ? (
-              <form
-                className="competition-post-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  const form = event.currentTarget;
-                  const values = new FormData(form);
-                  void act(async () => {
-                    await api(`${base}/discussion`, {
-                      method: 'POST',
-                      body: JSON.stringify({
-                        title: values.get('title'),
-                        body: values.get('body'),
-                      }),
-                    });
-                    form.reset();
-                    setNotice('Discussion posted');
-                  });
-                }}
-              >
-                <label>
-                  Discussion title
-                  <input name="title" required minLength={3} maxLength={160} />
-                </label>
-                <label>
-                  Message
-                  <textarea name="body" required minLength={3} maxLength={20000} rows={4} />
-                </label>
-                <button className="button secondary" disabled={busy}>
-                  Post discussion
-                </button>
-              </form>
-            ) : (
-              <button className="button secondary" onClick={signIn}>
-                Sign in to discuss
-              </button>
-            )}
-            {tabLoading ? (
-              <p role="status">Loading discussion…</p>
-            ) : posts.length ? (
-              posts.map((post) => (
-                <article className="competition-post" key={post.id}>
-                  <h3>{post.title}</h3>
-                  <small>
-                    {post.owner} · {new Date(post.created_at).toLocaleString()}
-                  </small>
-                  <p>{post.body}</p>
-                  <Engagement kind="competition-post" id={post.id} user={user} signIn={signIn} />
-                </article>
-              ))
-            ) : (
-              <div className="empty">
-                <h3>No discussions yet</h3>
-                <p>Start the first conversation.</p>
-              </div>
-            )}
-          </>
-        )}
+        {tab === 'discussion' &&
+          (discussionId ? (
+            <DiscussionThread
+              key={discussionId}
+              id={discussionId}
+              competitionId={id}
+              user={user}
+              signIn={signIn}
+            />
+          ) : (
+            <DiscussionList competitionId={id} user={user} signIn={signIn} />
+          ))}
         {tab === 'leaderboard' && (
           <>
             <h2>Leaderboard</h2>
@@ -391,7 +338,11 @@ export default function CompetitionPage({
                 </table>
               </div>
             ) : (
-              <p className="muted">No submissions yet. Set the first baseline.</p>
+              <p className="muted">
+                {item.evaluation_available === false
+                  ? 'Local scoring is deferred. Kaggle rankings are not reproduced here.'
+                  : 'No submissions yet. Set the first baseline.'}
+              </p>
             )}
           </>
         )}
@@ -401,7 +352,13 @@ export default function CompetitionPage({
         {tab === 'submissions' && (
           <>
             <h2>Submissions</h2>
-            {!user ? (
+            {item.evaluation_available === false ? (
+              <p role="status">
+                Local scoring is unavailable because the official test answers were not imported.
+                Download the original submission example from Data. You can explore, fork, edit, and
+                save code in Arena.
+              </p>
+            ) : !user ? (
               <button className="button secondary" onClick={signIn}>
                 Sign in to submit predictions
               </button>
@@ -464,32 +421,50 @@ export default function CompetitionPage({
             )}
           </>
         )}
-        {tab === 'rules' && (
-          <>
-            <h2>Submission rules</h2>
-            <ul className="competition-rules">
-              <li>Sign in and join the competition before submitting predictions.</li>
-              <li>
-                Submit a UTF-8 CSV with exactly these columns in order: id,prediction. Include one
-                finite numeric prediction for every required ID, with no missing, duplicate, or
-                extra IDs. Predictions must be between -1e12 and 1e12.
-              </li>
-              <li>Submission files must be no larger than 1 MB.</li>
-              <li>
-                Submissions close at{' '}
-                {item.deadline
-                  ? new Date(item.deadline).toLocaleString()
-                  : 'the competition deadline'}
-                .
-              </li>
-              <li>
-                The leaderboard uses each participant’s best {item.metric} score. Lower is better;
-                equal scores are ordered by username.
-              </li>
-            </ul>
-            <p className="muted">No additional organizer-specific rules have been published.</p>
-          </>
-        )}
+        {tab === 'rules' &&
+          (item.rules_url ? (
+            <>
+              <h2>Official competition rules</h2>
+              <Markdown>{item.rules_content || 'Read the full rules at the source link.'}</Markdown>
+              <a
+                className="button secondary"
+                href={item.rules_url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Read the full rules on Kaggle
+              </a>
+              <p className="muted">
+                Joining in Arena does not enroll you on Kaggle. Local scoring is deferred; the
+                original submission format is PassengerId,Survived.
+              </p>
+            </>
+          ) : (
+            <>
+              <h2>Submission rules</h2>
+              <ul className="competition-rules">
+                <li>Sign in and join the competition before submitting predictions.</li>
+                <li>
+                  Submit a UTF-8 CSV with exactly these columns in order: id,prediction. Include one
+                  finite numeric prediction for every required ID, with no missing, duplicate, or
+                  extra IDs. Predictions must be between -1e12 and 1e12.
+                </li>
+                <li>Submission files must be no larger than 1 MB.</li>
+                <li>
+                  Submissions close at{' '}
+                  {item.deadline
+                    ? new Date(item.deadline).toLocaleString()
+                    : 'the competition deadline'}
+                  .
+                </li>
+                <li>
+                  The leaderboard uses each participant’s best {item.metric} score. Lower is better;
+                  equal scores are ordered by username.
+                </li>
+              </ul>
+              <p className="muted">No additional organizer-specific rules have been published.</p>
+            </>
+          ))}
       </section>
     </article>
   );

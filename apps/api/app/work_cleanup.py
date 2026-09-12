@@ -13,8 +13,31 @@ from .notebook_runtime import get_hub, hub_username
 async def remove_work_file(task, db, hub=None):
     if task.kind == "upload":
         (DATA_DIR / "uploads" / task.path).unlink(missing_ok=True)
+    elif task.kind == "benchmark-run":
+        import re
+        import shutil
+
+        if not re.fullmatch(r"benchmark-\d+-[0-9a-f]+", task.path):
+            raise ValueError("Invalid benchmark run directory")
+        directory = DATA_DIR / "evaluations" / task.path
+        if directory.is_symlink():
+            directory.unlink()
+        elif directory.exists():
+            shutil.rmtree(directory)
     elif task.kind == "artifact":
         (DATA_DIR / "artifacts" / task.path).unlink(missing_ok=True)
+    elif task.kind == "discussion-image":
+        (DATA_DIR / "discussion-images" / task.path).unlink(missing_ok=True)
+    elif task.kind == "notebook-output":
+        from .models import NotebookOutput
+
+        # Multiple immutable snapshots may share the same physical bytes.
+        if not db.scalar(
+            select(NotebookOutput.id)
+            .where(NotebookOutput.storage_key == task.path)
+            .limit(1)
+        ):
+            (DATA_DIR / "notebook-outputs" / task.path).unlink(missing_ok=True)
     else:
         user = db.get(User, task.owner_id)
         hub = hub or get_hub()

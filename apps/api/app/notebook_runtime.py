@@ -116,6 +116,17 @@ def get_hub():
     return HubClient()
 
 
+@router.get("/notebook-runtime")
+def runtime_settings(user: User = Depends(current_user)):
+    from .runtime_jobs import integer
+
+    return {
+        "gpu_count": integer("NOTEBOOK_GPUS", 0, minimum=0, maximum=8),
+        "gpu_resource": os.getenv("GPU_RESOURCE_NAME", "nvidia.com/gpu"),
+        "cell_timeout_seconds": integer("NOTEBOOK_CELL_TIMEOUT_SECONDS", 120),
+    }
+
+
 @router.get("/notebook-session")
 async def session_status(
     user: User = Depends(current_user), hub: HubClient = Depends(get_hub)
@@ -189,6 +200,10 @@ async def open_notebook(
         from .db import DATA_DIR
 
         document = notebook_document(notebook, db, working=notebook.owner_id == user.id)
+        from .notebook_outputs import copy_input
+
+        for item in document.get("metadata", {}).get("arena_notebook_inputs", []):
+            await copy_input(db, item["id"], user, hub)
         for item in document.get("metadata", {}).get("arena_inputs", []):
             from .dataset_access import visible_datasets
 

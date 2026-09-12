@@ -63,7 +63,11 @@ def test_profile_photo_privacy_and_persistence(member):
     login(member)
     assert member.get("/api/profiles/learner/avatar").content == photo
     assert member.delete("/api/account/avatar").status_code == 204
-    assert member.get("/api/profiles/learner/avatar").status_code == 404
+    assert (
+        member.get("/api/profiles/learner/avatar")
+        .headers["content-type"]
+        .startswith("image/svg+xml")
+    )
 
 
 def test_tokens_hash_scopes_expiry_revocation_and_browser_only_management(member):
@@ -227,3 +231,24 @@ def test_service_notifications_targeting_and_read_state(member):
         member.post(f"/api/account/notifications/{welcome['id']}/read").status_code
         == 404
     )
+
+
+def test_default_avatars_follow_explicit_pronouns(member):
+    profile = member.get("/api/account/profile").json()
+    assert profile["avatar_url"] == "/api/profiles/learner/avatar"
+    assert profile["has_custom_avatar"] is False
+    for pronouns, style in [
+        ("", "neutral"),
+        ("he / him", "man"),
+        ("she/her", "woman"),
+        ("they/them", "neutral"),
+        ("he/she", "neutral"),
+    ]:
+        assert (
+            member.put("/api/account/profile", json={"pronouns": pronouns}).status_code
+            == 200
+        )
+        photo = member.get(profile["avatar_url"])
+        assert photo.status_code == 200
+        assert f"Default {style} avatar" in photo.text
+    assert member.get("/api/avatar-default").status_code == 200

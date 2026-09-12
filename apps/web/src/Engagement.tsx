@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api, type User } from './api';
 import Markdown from './Markdown';
+import DiscussionEditor from './DiscussionEditor';
+import DiscussionAvatar from './DiscussionAvatar';
 
 type Reaction = { reaction: string; count: number; reacted: boolean };
 type Reply = { id: number; owner_id: number; username: string; body: string; created_at: string };
@@ -17,12 +19,19 @@ export default function Engagement({
   user,
   signIn,
   allowReply = true,
+  competitionId,
 }: {
-  kind: 'notebook-comment' | 'discussion-comment' | 'discussion' | 'competition-post';
+  kind:
+    | 'notebook-comment'
+    | 'discussion-comment'
+    | 'discussion'
+    | 'competition-post'
+    | 'competition-comment';
   id: number;
   user: User | null;
   signIn: () => void;
   allowReply?: boolean;
+  competitionId?: number;
 }) {
   const base = `/engagement/${kind}/${id}`;
   const [thread, setThread] = useState<Thread | null>(null);
@@ -30,6 +39,7 @@ export default function Engagement({
   const [busy, setBusy] = useState(false);
   const [replying, setReplying] = useState(false);
   const [body, setBody] = useState('');
+  const [uploading, setUploading] = useState(false);
   useEffect(() => {
     let active = true;
     setThread(null);
@@ -89,7 +99,7 @@ export default function Engagement({
         {allowReply && (
           <button
             type="button"
-            disabled={busy || !thread}
+            disabled={busy || uploading || !thread}
             aria-expanded={replying}
             onClick={() => {
               if (!user) signIn();
@@ -104,6 +114,7 @@ export default function Engagement({
         <form
           onSubmit={(event) => {
             event.preventDefault();
+            if (busy || uploading || !body.trim()) return;
             void act(async () => {
               const reply = await api<Reply>(`${base}/replies`, {
                 method: 'POST',
@@ -115,25 +126,37 @@ export default function Engagement({
             });
           }}
         >
-          <label>
-            Write a reply
-            <textarea
-              autoFocus
-              rows={3}
-              maxLength={10000}
-              required
+          {competitionId ? (
+            <DiscussionEditor
+              label="Write a reply"
               value={body}
-              onChange={(event) => setBody(event.target.value)}
+              onChange={setBody}
+              competitionId={competitionId}
+              limit={10000}
+              disabled={busy}
+              onUploadingChange={setUploading}
             />
-          </label>
+          ) : (
+            <label>
+              Write a reply
+              <textarea
+                autoFocus
+                rows={3}
+                maxLength={10000}
+                required
+                value={body}
+                onChange={(event) => setBody(event.target.value)}
+              />
+            </label>
+          )}
           <div className="button-row">
-            <button className="button" disabled={busy || !body.trim()}>
+            <button className="button" disabled={busy || uploading || !body.trim()}>
               Post reply
             </button>
             <button
               className="button secondary"
               type="button"
-              disabled={busy}
+              disabled={busy || uploading}
               onClick={() => setReplying(false)}
             >
               Cancel
@@ -145,7 +168,8 @@ export default function Engagement({
         <div className="engagement-replies">
           {thread?.replies.map((reply) => (
             <article className="engagement-reply" key={reply.id}>
-              <p>
+              <p className="discussion-author">
+                {competitionId && <DiscussionAvatar username={reply.username} />}
                 <strong>{reply.username}</strong> · {new Date(reply.created_at).toLocaleString()}
               </p>
               <Markdown>{reply.body}</Markdown>

@@ -144,6 +144,11 @@ async def put_document(
                 db.add(working)
             from .notebook_versions import save_version
 
+            from .notebook_files import snapshot_outputs, folder_for
+
+            await snapshot_outputs(
+                db, db.get(Notebook, int(id)), user, hub, folder_for(db, path)
+            )
             save_version(db, db.get(Notebook, int(id)), data.model_dump())
             working.document = json.dumps(data.model_dump())
             db.commit()
@@ -185,25 +190,66 @@ async def attach_input(
             ),
             (200, 201),
         )
+    from .notebook_files import folder_for, mkdir, endpoint
+
+    target_folder = folder_for(db, resolve(kind, id, user, db))
+    await mkdir(user, hub, target_folder)
+    hub.expect(
+        await hub.request(
+            "PUT",
+            endpoint(user, target_folder + "/" + path),
+            contents=True,
+            json={
+                "type": "file",
+                "format": "base64",
+                "content": base64.b64encode(content).decode(),
+            },
+        ),
+        (200, 201),
+    )
     return {"path": path}
 
 
-async def kernel_for(user, path, hub):
+async def kernel_for(user, path, hub, db):
+    from .notebook_files import folder_for, prepare_inputs
+
+    folder = folder_for(db, path)
+    scoped_path = folder + "/session.ipynb"
     base = f"/user/{hub_username(user)}/api"
     async with user_lock(user.id):
         sessions = hub.expect(
             await hub.request("GET", base + "/sessions", contents=True)
         ).json()
         for session in sessions:
-            if session.get("path") == path:
+            if session.get("path") in (path, scoped_path):
                 return session["kernel"]["id"]
+        response = await hub.request("GET", contents(user, path), contents=True)
+        if response.status_code == 404:
+            from .notebook_runtime import notebook_document
+
+            notebook = (
+                db.get(
+                    Notebook,
+                    int(path.removeprefix("arena-notebook-").removesuffix(".ipynb")),
+                )
+                if path.startswith("arena-notebook-")
+                else None
+            )
+            document = (
+                notebook_document(notebook, db, working=notebook.owner_id == user.id)
+                if notebook
+                else {"metadata": {}}
+            )
+        else:
+            document = hub.expect(response).json()["content"]
+        await prepare_inputs(db, user, hub, folder, document)
         session = hub.expect(
             await hub.request(
                 "POST",
                 base + "/sessions",
                 contents=True,
                 json={
-                    "path": path,
+                    "path": scoped_path,
                     "name": path,
                     "type": "notebook",
                     "kernel": {"name": "python3"},
@@ -224,7 +270,23 @@ async def control_kernel(
     hub: HubClient = Depends(get_hub),
 ):
     path = resolve(kind, id, user, db)
-    kernel = await kernel_for(user, path, hub)
+    if action == "restart":
+        sessions = hub.expect(
+            await hub.request(
+                "GET", f"/user/{hub_username(user)}/api/sessions", contents=True
+            )
+        ).json()
+        for session in sessions:
+            if session.get("path") == path:
+                hub.expect(
+                    await hub.request(
+                        "DELETE",
+                        f"/user/{hub_username(user)}/api/sessions/{session['id']}",
+                        contents=True,
+                    ),
+                    (204, 404),
+                )
+    kernel = await kernel_for(user, path, hub, db)
     hub.expect(
         await hub.request(
             "POST",
@@ -254,7 +316,7 @@ async def execute(
     hub: HubClient = Depends(get_hub),
 ):
     path = resolve(kind, id, user, db)
-    kernel = await kernel_for(user, path, hub)
+    kernel = await kernel_for(user, path, hub, db)
     lock = kernel_lock((user.id, kernel))
     if lock.locked():
         raise HTTPException(409, "This notebook is already running a cell")
@@ -305,12 +367,22 @@ async def execute(
                         }
                     )
                 )
-                deadline = time.monotonic() + 120
+                from .runtime_jobs import integer
+
+                deadline = time.monotonic() + integer(
+                    "NOTEBOOK_CELL_TIMEOUT_SECONDS", 120
+                )
                 while True:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise asyncio.TimeoutError()
-                    raw = await asyncio.wait_for(socket.recv(), remaining)
+                    try:
+                        raw = await asyncio.wait_for(socket.recv(), min(remaining, 15))
+                    except asyncio.TimeoutError:
+                        if time.monotonic() >= deadline:
+                            raise
+                        yield json.dumps({"type": "heartbeat"}) + "\n"
+                        continue
                     if not isinstance(raw, str):
                         continue  # Binary widget comms are not supported by the editor.
                     message = json.loads(raw)
@@ -365,3 +437,129 @@ async def execute(
         media_type="application/x-ndjson",
         headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"},
     )
+
+
+@router.post("/{kind}/{id}/notebook-inputs/{output_id}")
+async def attach_notebook_output(
+    kind: Kind,
+    id: str,
+    output_id: int,
+    user=Depends(current_user),
+    db: Session = Depends(get_db),
+    hub=Depends(get_hub),
+):
+    from .notebook_outputs import copy_input
+
+    async with user_lock(user.id):
+        resolve(kind, id, user, db)
+        from .notebook_files import folder_for
+
+        result = await copy_input(db, output_id, user, hub)
+        await copy_input(
+            db, output_id, user, hub, folder_for(db, resolve(kind, id, user, db))
+        )
+        return result
+
+
+@router.post("/{kind}/{id}/input-sources/{source_kind}/{source_id}")
+async def attach_source(
+    kind: Kind,
+    id: str,
+    source_kind: str,
+    source_id: int,
+    user=Depends(current_user),
+    db=Depends(get_db),
+    hub=Depends(get_hub),
+):
+    from .input_sources import source_files, materialize
+    from .notebook_files import folder_for
+
+    async with user_lock(user.id):
+        path = resolve(kind, id, user, db)
+        item, _ = source_files(db, user, source_kind, source_id)
+        sessions = hub.expect(
+            await hub.request(
+                "GET", f"/user/{hub_username(user)}/api/sessions", contents=True
+            )
+        ).json()
+        if any(session.get("path") == path for session in sessions):
+            await materialize(db, user, hub, "", item)
+        return await materialize(db, user, hub, folder_for(db, path), item)
+
+
+@router.post("/{kind}/{id}/remove-input-source")
+async def remove_source(
+    kind: Kind,
+    id: str,
+    item: dict,
+    user=Depends(current_user),
+    db=Depends(get_db),
+    hub=Depends(get_hub),
+):
+    from .input_sources import validate_reference
+    from .notebook_files import folder_for, endpoint
+    from pathlib import PurePosixPath
+
+    async with user_lock(user.id):
+        notebook_path = resolve(kind, id, user, db)
+        folders = [folder_for(db, notebook_path)]
+        sessions = hub.expect(
+            await hub.request(
+                "GET", f"/user/{hub_username(user)}/api/sessions", contents=True
+            )
+        ).json()
+        if any(session.get("path") == notebook_path for session in sessions):
+            folders.append("")
+        result = validate_reference(item)
+        files = [(file["id"], file["filename"], None) for file in result["files"]]
+        for folder in folders:
+            directories = {(folder + "/" if folder else "") + result["path"]}
+            for _, name, _ in files:
+                path = (folder + "/" if folder else "") + result["path"] + "/" + name
+                response = await hub.request(
+                    "DELETE", endpoint(user, path), contents=True
+                )
+                if response.status_code != 404:
+                    hub.expect(response, (204,))
+                parent = str(PurePosixPath(path).parent)
+                while parent.startswith(
+                    (folder + "/" if folder else "") + result["path"]
+                ):
+                    directories.add(parent)
+                    parent = str(PurePosixPath(parent).parent)
+            for directory in sorted(directories, key=len, reverse=True):
+                response = await hub.request(
+                    "DELETE", endpoint(user, directory), contents=True
+                )
+                if response.status_code not in (400, 404):
+                    hub.expect(response, (204,))
+        return {"removed": True}
+
+
+@router.delete("/{kind}/{id}/legacy-inputs/{source_kind}/{source_id}")
+async def remove_legacy_input(
+    kind: Kind,
+    id: str,
+    source_kind: Literal["dataset", "notebook-output"],
+    source_id: int,
+    user=Depends(current_user),
+    db=Depends(get_db),
+    hub=Depends(get_hub),
+):
+    from .notebook_files import folder_for, endpoint
+    from .notebook_outputs import readable, input_path
+
+    async with user_lock(user.id):
+        folder = folder_for(db, resolve(kind, id, user, db))
+        path = (
+            input_path(readable(db, source_id, user))
+            if source_kind == "notebook-output"
+            else f"arena-input-{source_id}.csv"
+        )
+        for target in (path, folder + "/" + path):
+            response = await hub.request(
+                "DELETE", endpoint(user, target), contents=True
+            )
+            if response.status_code != 404:
+                hub.expect(response, (204,))
+        return {"removed": True}

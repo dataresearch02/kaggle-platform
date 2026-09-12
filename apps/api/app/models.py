@@ -442,3 +442,172 @@ class NoticeRead(Base):
     __tablename__ = "notice_reads"
     notice_id = Column(Integer, ForeignKey("service_notices.id"), primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+
+
+class CompetitionSource(Base):
+    """Provenance for externally hosted competition materials."""
+
+    __tablename__ = "competition_sources"
+    competition_id = Column(Integer, ForeignKey("competitions.id"), primary_key=True)
+    source_url = Column(Text, nullable=False)
+    rules_url = Column(Text, nullable=False)
+    rules_content = Column(Text, nullable=False)
+    pages_json = Column(Text, nullable=False, default="{}")
+    ongoing = Column(Integer, nullable=False, default=0)
+
+
+class NotebookSettings(Base):
+    __tablename__ = "notebook_settings"
+    notebook_id = Column(
+        Integer, ForeignKey("notebooks.id", ondelete="CASCADE"), primary_key=True
+    )
+    allow_comments = Column(Integer, nullable=False, default=1)
+
+
+class NotebookOutput(Base):
+    __tablename__ = "notebook_outputs"
+    id = Column(Integer, primary_key=True)
+    notebook_id = Column(
+        Integer,
+        ForeignKey("notebooks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    filename = Column(String(255), nullable=False)
+    storage_key = Column(String(64), nullable=False)
+    size = Column(Integer, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    shared = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=now)
+
+
+class NotebookWorkspaceFolder(Base):
+    __tablename__ = "notebook_workspace_folders"
+    notebook_id = Column(
+        Integer, ForeignKey("notebooks.id", ondelete="CASCADE"), primary_key=True
+    )
+    folder = Column(String(160), nullable=False)
+
+
+class NotebookDraftCompetition(Base):
+    """Competition context retained independently of browser state."""
+
+    __tablename__ = "notebook_draft_competitions"
+    draft_id = Column(
+        String(32),
+        ForeignKey("notebook_drafts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    competition_id = Column(Integer, ForeignKey("competitions.id"), nullable=False)
+
+
+class CompetitionTopicSettings(Base):
+    __tablename__ = "competition_topic_settings"
+    post_id = Column(
+        Integer,
+        ForeignKey("competition_posts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    pinned = Column(Integer, nullable=False, default=0)
+
+
+class CompetitionTopicBookmark(Base):
+    __tablename__ = "competition_topic_bookmarks"
+    post_id = Column(
+        Integer,
+        ForeignKey("competition_posts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+
+
+class DiscussionImage(Base):
+    __tablename__ = "discussion_images"
+    id = Column(String(48), primary_key=True)
+    competition_id = Column(
+        Integer,
+        ForeignKey("competitions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    media_type = Column(String(40), nullable=False)
+    size = Column(Integer, nullable=False)
+    created_at = Column(String, default=now)
+
+
+class NotebookPublisher(Base):
+    """Publisher identity captured when a notebook is committed successfully."""
+
+    __tablename__ = "notebook_publishers"
+    notebook_id = Column(
+        Integer, ForeignKey("notebooks.id", ondelete="CASCADE"), primary_key=True
+    )
+    identity = Column(Text, nullable=False)
+
+
+class BenchmarkAsset(Base):
+    """A reusable task or model; code and data live in immutable revisions."""
+
+    __tablename__ = "benchmark_assets"
+    id = Column(Integer, primary_key=True)
+    kind = Column(String(10), nullable=False, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String(160), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    visibility = Column(String(10), nullable=False, default="private")
+    created_at = Column(String, default=now)
+
+
+class BenchmarkAssetVersion(Base):
+    __tablename__ = "benchmark_asset_versions"
+    id = Column(Integer, primary_key=True)
+    asset_id = Column(
+        Integer, ForeignKey("benchmark_assets.id"), nullable=False, index=True
+    )
+    source = Column(Text, nullable=False)
+    provider_id = Column(String(128), nullable=True)
+    cases = Column(Text, nullable=False, default="[]")
+    digest = Column(String(64), nullable=False)
+    created_at = Column(String, default=now)
+
+
+class BenchmarkCollection(Base):
+    __tablename__ = "benchmark_collections"
+    id = Column(Integer, primary_key=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String(160), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    visibility = Column(String(10), nullable=False, default="private")
+    configuration = Column(Text, nullable=False, default='{"tasks":[],"models":[]}')
+    created_at = Column(String, default=now)
+
+
+class BenchmarkRun(Base):
+    __tablename__ = "benchmark_runs"
+    id = Column(Integer, primary_key=True)
+    collection_id = Column(
+        Integer, ForeignKey("benchmark_collections.id"), nullable=False, index=True
+    )
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    fingerprint = Column(String(64), nullable=False, index=True)
+    snapshot = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    results = Column(Text, nullable=False, default="[]")
+    logs = Column(Text, nullable=False, default="")
+    error = Column(Text, nullable=False, default="")
+    created_at = Column(String, default=now)
+    finished_at = Column(String, nullable=True)
+
+
+class NotebookDraftInput(Base):
+    """Pinned resource selected before opening a new notebook."""
+
+    __tablename__ = "notebook_draft_inputs"
+    draft_id = Column(
+        String(32),
+        ForeignKey("notebook_drafts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    source = Column(Text, nullable=False)

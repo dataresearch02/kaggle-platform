@@ -21,6 +21,8 @@ from .models import (
     Notebook,
     NotebookWorkingCopy,
     NotebookDraft,
+    NotebookDraftCompetition,
+    NotebookDraftInput,
     User,
     Competition,
     CompetitionResource,
@@ -97,14 +99,30 @@ def create(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
     competition_id: Optional[int] = Query(default=None, ge=1),
+    source_kind: Optional[str] = None,
+    source_id: Optional[int] = Query(default=None, ge=1),
 ):
     joined_competition(db, competition_id, user)
+    source = None
+    if source_kind is not None or source_id is not None:
+        if source_kind not in ("dataset", "model") or source_id is None:
+            raise HTTPException(422, "Select a dataset or model input")
+        from .input_sources import source_files
+
+        source, _ = source_files(db, user, source_kind, source_id)
     draft = NotebookDraft(
         id=secrets.token_hex(16),
         owner_id=user.id,
         expires_at=time.time() + LEASE_SECONDS,
     )
     db.add(draft)
+    db.flush()
+    if competition_id is not None:
+        db.add(
+            NotebookDraftCompetition(draft_id=draft.id, competition_id=competition_id)
+        )
+    if source:
+        db.add(NotebookDraftInput(draft_id=draft.id, source=json.dumps(source)))
     db.commit()
     return {"id": draft.id}
 
@@ -137,6 +155,68 @@ async def open_draft(
     )
     if response.status_code == 404:
         document = notebook_document(Notebook(id=draft.id, code=""))
+        context = db.get(NotebookDraftCompetition, draft.id)
+        if context:
+            joined_competition(db, context.competition_id, user)
+            from .input_sources import source_files
+            from .models import CompetitionDataFile
+
+            # Competitions without published files can still have linked notebooks.
+            if db.scalar(
+                select(CompetitionDataFile.id)
+                .where(
+                    CompetitionDataFile.competition_id == context.competition_id,
+                    CompetitionDataFile.role.in_(
+                        [
+                            "train",
+                            "test",
+                            "reference",
+                            "submission",
+                            "sample_submission",
+                        ]
+                    ),
+                )
+                .limit(1)
+            ):
+                source, _ = source_files(
+                    db, user, "competition", context.competition_id
+                )
+                document["metadata"]["arena_input_sources"] = [source]
+                document["cells"].append(
+                    {
+                        "id": "competition-inputs",
+                        "cell_type": "code",
+                        "metadata": {},
+                        "execution_count": None,
+                        "outputs": [],
+                        "source": "from pathlib import Path\ninput_dir = Path("
+                        + json.dumps(source["path"])
+                        + ")\nfor input_file in input_dir.rglob('*'):\n    if input_file.is_file():\n        print(input_file)\n",
+                    }
+                )
+            document["metadata"]["arena_competition_id"] = context.competition_id
+        selected_input = db.get(NotebookDraftInput, draft.id)
+        if selected_input:
+            from .input_sources import resolve_attachment
+
+            source, _ = resolve_attachment(db, user, json.loads(selected_input.source))
+            document["metadata"].setdefault("arena_input_sources", []).append(source)
+            document["cells"].append(
+                {
+                    "id": "resource-inputs",
+                    "cell_type": "code",
+                    "metadata": {},
+                    "execution_count": None,
+                    "outputs": [],
+                    "source": "from pathlib import Path\ninput_dir = Path("
+                    + json.dumps(source["path"])
+                    + ")\nfor file in input_dir.rglob('*'):\n    if file.is_file():\n        print(file)\n",
+                }
+            )
+        if context or selected_input:
+            from .notebook_files import prepare_inputs, folder_for
+
+            await prepare_inputs(db, user, hub, folder_for(db, path), document)
         hub.expect(
             await hub.request(
                 "PUT",
@@ -166,6 +246,11 @@ async def save(
     hub: HubClient = Depends(get_hub),
 ):
     draft = owned(db, id, user)
+    context = db.get(NotebookDraftCompetition, draft.id)
+    if context:
+        if data.competition_id not in (None, context.competition_id):
+            raise HTTPException(409, "Keep this notebook's original competition link")
+        data.competition_id = context.competition_id
     if draft.notebook_id:
         db.scalar(
             select(Notebook).where(Notebook.id == draft.notebook_id).with_for_update()
@@ -216,6 +301,13 @@ async def save(
     working.document = json.dumps(document)
     from .notebook_versions import save_version
 
+    from .notebook_files import snapshot_outputs, folder_for
+    from .models import NotebookWorkspaceFolder
+
+    folder = folder_for(db, path_for(draft))
+    if not db.get(NotebookWorkspaceFolder, notebook.id):
+        db.add(NotebookWorkspaceFolder(notebook_id=notebook.id, folder=folder))
+    await snapshot_outputs(db, notebook, user, hub, folder)
     save_version(db, notebook, document)
     # The working copy retains Markdown, metadata and outputs, not only template code.
     hub.expect(
@@ -242,7 +334,10 @@ async def remove_file(draft, user, hub):
         )
     ).json()
     for session in sessions:
-        if session.get("path") == path_for(draft):
+        if session.get("path") in (
+            path_for(draft),
+            "workspaces/" + path_for(draft).removesuffix(".ipynb") + "/session.ipynb",
+        ):
             hub.expect(
                 await hub.request(
                     "DELETE",
@@ -273,6 +368,9 @@ async def discard(
     draft.expires_at = 0
     db.commit()
     if await remove_file(draft, user, hub):
+        selected_input = db.get(NotebookDraftInput, draft.id)
+        if selected_input:
+            db.delete(selected_input)
         db.delete(draft)
         db.commit()
     return Response(status_code=204)
@@ -298,6 +396,11 @@ async def cleanup_drafts():
                                 if draft.expires_at < time.time() and await remove_file(
                                     draft, user, hub
                                 ):
+                                    selected_input = db.get(
+                                        NotebookDraftInput, draft.id
+                                    )
+                                    if selected_input:
+                                        db.delete(selected_input)
                                     db.delete(draft)
                                     db.commit()
                     except HTTPException:
