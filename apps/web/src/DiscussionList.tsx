@@ -24,6 +24,7 @@ export type Topic = {
   pinned: boolean;
   bookmarked: boolean;
   voted: boolean;
+  hidden?: boolean;
 };
 export default function DiscussionList({
   competitionId,
@@ -214,7 +215,10 @@ export default function DiscussionList({
                 <DiscussionAvatar username={row.owner} pinned={row.pinned} />
                 <div className="discussion-topic-copy">
                   <a href={`#competitions/${row.competition_id}/discussion/${row.id}`}>
-                    <h3>{row.title}</h3>
+                    <h3>
+                      {row.title}
+                      {row.hidden && <span className="moderation-badge">Hidden</span>}
+                    </h3>
                   </a>
                   <p>
                     {row.owner} · {row.comment_count ? 'Last comment' : 'Posted'}{' '}

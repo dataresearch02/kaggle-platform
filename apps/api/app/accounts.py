@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session as DBSession
 from .auth import current_user, verify_password, hash_password, new_session
 from .code_pages import optional_user
 from .db import get_db
+from .permissions import can_manage
 from .models import (
     User,
     UserProfile,
@@ -75,21 +76,29 @@ class ProfileInput(BaseModel):
 def profile_info(db, user):
     row = db.get(UserProfile, user.id)
     return {
+        "id": user.id,
         "username": user.username,
+        "role": user.role,
         "joined_at": user.created_at,
         **ProfileInput().model_dump(),
         **(json.loads(row.details) if row else {}),
         "avatar_url": f"/api/profiles/{user.username}/avatar",
         "has_custom_avatar": bool(row and row.avatar),
         "visibility": row.visibility if row else "public",
+        "hidden": bool(row and row.hidden),
+        "hidden_reason": row.hidden_reason if row else "",
     }
 
 
 def visible_profile(db, username, visitor):
     user = db.scalar(select(User).where(User.username == username.lower()))
     row = db.get(UserProfile, user.id) if user else None
-    if not user or (
-        row and row.visibility == "private" and (not visitor or visitor.id != user.id)
+    owner = bool(user and visitor and visitor.id == user.id)
+    if (
+        not user
+        or (row and row.visibility == "private" and not owner)
+        # Moderator-hidden profiles stay visible to their owner and administrators.
+        or (row and row.hidden and not can_manage(visitor, user.id))
     ):
         raise HTTPException(404, "Profile not found")
     return user

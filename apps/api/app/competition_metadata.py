@@ -86,19 +86,23 @@ def initialize_competition(db, competition):
             data_description="Review the file descriptions and column dictionary before training. Test labels are kept private.",
         )
     )
+    from .seed import SEED_COMPETITION, SEED_TEST_CSV
+
+    # Only the legacy seeded competition predates stored test features.
     test = (
         details.test_csv
         if details
-        else "id,temperature,working_day\n7,20,1\n8,10,1\n9,23,0\n"
+        else SEED_TEST_CSV if competition.title == SEED_COMPETITION else None
     )
-    add_file(
-        db,
-        competition.id,
-        "test/test.csv",
-        "test",
-        test,
-        description="Features for evaluation. Predict one value for each id.",
-    )
+    if test is not None:
+        add_file(
+            db,
+            competition.id,
+            "test/test.csv",
+            "test",
+            test,
+            description="Features for evaluation. Predict one value for each id.",
+        )
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["id", "prediction"])
@@ -155,6 +159,22 @@ def backfill_metadata(db):
                         license=dataset.license,
                     )
     db.commit()
+
+
+def test_csv(db, competition_id):
+    """Test features from creator details or the stored snapshot; None if absent."""
+    details = db.get(ChallengeDetails, competition_id)
+    if details:
+        return details.test_csv
+    return db.scalar(
+        select(CompetitionDataFile.content)
+        .where(
+            CompetitionDataFile.competition_id == competition_id,
+            CompetitionDataFile.role == "test",
+        )
+        .order_by(CompetitionDataFile.id)
+        .limit(1)
+    )
 
 
 def require_data_access(db, competition_id, user):

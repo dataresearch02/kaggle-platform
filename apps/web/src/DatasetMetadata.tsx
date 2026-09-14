@@ -110,9 +110,12 @@ export default function DatasetMetadata({ id, owner }: { id: number; owner: bool
       ) : (
         <>
           {data.source_url && /^https?:\/\//.test(data.source_url) && (
-            <a href={data.source_url} target="_blank" rel="noreferrer">
-              Original source
-            </a>
+            <p className="external-reference">
+              External source (not available offline):{' '}
+              <a href={data.source_url} target="_blank" rel="noreferrer noopener">
+                {data.source_url}
+              </a>
+            </p>
           )}
           <p className="competition-description">{data.documentation}</p>
           <p className="competition-description">{data.citation}</p>

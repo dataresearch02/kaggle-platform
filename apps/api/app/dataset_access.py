@@ -3,11 +3,12 @@
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, or_
+from sqlalchemy import and_, select, or_
 from sqlalchemy.orm import Session
 from .auth import current_user
 from .db import get_db
 from .models import Dataset, DatasetAccess, DatasetShare, User
+from .permissions import can_manage, not_hidden
 
 router = APIRouter(prefix="/api/datasets", tags=["Dataset access"])
 
@@ -22,12 +23,15 @@ def visible_datasets(user):
         DatasetAccess.visibility == "private"
     )
     uid = user.id if user else -1
-    return or_(
-        Dataset.id.not_in(private),
-        Dataset.owner_id == uid,
-        Dataset.id.in_(
-            select(DatasetShare.dataset_id).where(DatasetShare.user_id == uid)
+    return and_(
+        or_(
+            Dataset.id.not_in(private),
+            Dataset.owner_id == uid,
+            Dataset.id.in_(
+                select(DatasetShare.dataset_id).where(DatasetShare.user_id == uid)
+            ),
         ),
+        not_hidden(Dataset, user),
     )
 
 
@@ -40,7 +44,7 @@ def readable(db, id, user):
 
 def owner(db, id, user):
     row = db.scalar(select(Dataset).where(Dataset.id == id).with_for_update())
-    if not row or row.owner_id != user.id:
+    if not row or not can_manage(user, row.owner_id):
         raise HTTPException(404, "Your dataset was not found")
     return row
 

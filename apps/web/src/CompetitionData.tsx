@@ -254,9 +254,12 @@ export default function CompetitionData({
               <p className="muted">Source dataset #{current.source_dataset_id} · stored snapshot</p>
             )}
             {current?.source_url && /^https?:\/\//.test(current.source_url) && (
-              <a href={current.source_url} target="_blank" rel="noreferrer">
-                Original source
-              </a>
+              <p className="external-reference">
+                External source (not available offline):{' '}
+                <a href={current.source_url} target="_blank" rel="noreferrer noopener">
+                  {current.source_url}
+                </a>
+              </p>
             )}
             {!access ? (
               <div className="competition-data-locked">

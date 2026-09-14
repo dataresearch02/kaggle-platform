@@ -5,18 +5,30 @@ import Markdown from './Markdown';
 import DiscussionEditor from './DiscussionEditor';
 import DiscussionAvatar from './DiscussionAvatar';
 import { api, type User } from './api';
+import ModerationActions, { HiddenNotice } from './Moderation';
 export type DiscussionPost = {
   id: number;
   competition_id: number;
+  owner_id: number;
   title: string;
   body: string;
   owner: string;
+  hidden?: boolean;
+  hidden_reason?: string;
   created_at: string;
   pinned: boolean;
   bookmarked: boolean;
   can_pin: boolean;
 };
-type Comment = { id: number; owner_id: number; username: string; body: string; created_at: string };
+type Comment = {
+  id: number;
+  owner_id: number;
+  username: string;
+  body: string;
+  created_at: string;
+  hidden?: boolean;
+  hidden_reason?: string;
+};
 export default function DiscussionThread({
   id,
   competitionId,
@@ -143,7 +155,21 @@ export default function DiscussionThread({
                 {post.pinned ? ' · Pinned' : ''}
               </small>
             </div>
+            <HiddenNotice hidden={post.hidden} reason={post.hidden_reason} />
             <Markdown>{post.body}</Markdown>
+            <ModerationActions
+              kind="competition-post"
+              id={post.id}
+              ownerId={post.owner_id}
+              hidden={post.hidden}
+              user={user}
+              signIn={signIn}
+              label="discussion topic"
+              onChange={(change) => {
+                if (change.deleted) location.hash = `competitions/${competitionId}/discussion`;
+                else setPost({ ...post, hidden: change.hidden, hidden_reason: change.reason });
+              }}
+            />
             <Engagement
               kind="competition-post"
               id={post.id}
@@ -222,7 +248,28 @@ export default function DiscussionThread({
                     </button>
                   )}
                 </header>
+                <HiddenNotice hidden={comment.hidden} reason={comment.hidden_reason} />
                 <Markdown>{comment.body}</Markdown>
+                <ModerationActions
+                  kind="reply"
+                  id={comment.id}
+                  ownerId={comment.owner_id}
+                  hidden={comment.hidden}
+                  user={user}
+                  signIn={signIn}
+                  label={`comment by ${comment.username}`}
+                  onChange={(change) =>
+                    setComments((old) =>
+                      change.deleted
+                        ? old.filter((row) => row.id !== comment.id)
+                        : old.map((row) =>
+                            row.id === comment.id
+                              ? { ...row, hidden: change.hidden, hidden_reason: change.reason }
+                              : row,
+                          ),
+                    )
+                  }
+                />
                 <Engagement
                   kind="competition-comment"
                   id={comment.id}

@@ -1,9 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bell, FolderOpen, KeyRound, LogOut, Settings, UserRound, Users, X } from 'lucide-react';
+import {
+  Bell,
+  FolderOpen,
+  KeyRound,
+  LogOut,
+  Settings,
+  ShieldCheck,
+  UserRound,
+  Users,
+  X,
+} from 'lucide-react';
 import { api, type User } from './api';
 import ProfilePhoto from './ProfilePhoto';
 
 export type Profile = {
+  id?: number;
+  role?: string;
+  hidden?: boolean;
+  hidden_reason?: string;
   username: string;
   display_name: string;
   tagline: string;
@@ -88,13 +102,14 @@ export default function AccountMenu({
     setOpen(false);
     trigger.current?.focus();
   }
-  const links = [
+  const links: [string, string, typeof FolderOpen][] = [
     ['work', 'Your work', FolderOpen],
     ['account/profile', 'Your profile', UserRound],
     ['account/groups', 'Your groups', Users],
     ['account/tokens', 'Your API tokens', KeyRound],
     ['account/settings', 'Settings', Settings],
-  ] as const;
+  ];
+  if (user.role === 'admin') links.push(['admin', 'Administration', ShieldCheck]);
   return (
     <>
       <button

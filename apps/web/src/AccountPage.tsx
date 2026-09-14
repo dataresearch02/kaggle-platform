@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type User } from './api';
 import { Avatar, type Profile } from './AccountMenu';
+import ModerationActions, { HiddenNotice } from './Moderation';
 
 type Token = {
   id: number;
@@ -158,6 +159,36 @@ export default function AccountPage({
                   .join(' · ')}
               </p>
               <p className="profile-bio">{profile.bio}</p>
+              <HiddenNotice hidden={profile.hidden} reason={profile.hidden_reason} />
+              {profile.id !== undefined && (
+                <ModerationActions
+                  kind="profile"
+                  id={profile.id}
+                  ownerId={profile.id}
+                  hidden={profile.hidden}
+                  user={user}
+                  signIn={signIn}
+                  label="profile"
+                  onChange={(change) =>
+                    setProfile(
+                      change.deleted
+                        ? {
+                            ...profile,
+                            display_name: '',
+                            tagline: '',
+                            pronouns: '',
+                            occupation: '',
+                            organization: '',
+                            location: '',
+                            bio: '',
+                            website: null,
+                            has_custom_avatar: false,
+                          }
+                        : { ...profile, hidden: change.hidden, hidden_reason: change.reason },
+                    )
+                  }
+                />
+              )}
               {profile.website && (
                 <a href={profile.website} target="_blank" rel="noreferrer">
                   Website ↗

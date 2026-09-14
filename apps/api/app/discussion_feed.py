@@ -2,13 +2,15 @@
 
 import secrets
 from typing import Literal, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select, or_, func
 from .db import get_db, DATA_DIR
 from .auth import current_user
 from .code_pages import optional_user
+from .pagination import MAX_LIMIT, count as count_rows, set_total
+from .permissions import can_manage, can_view, not_hidden
 from .models import (
     CompetitionPost,
     User,
@@ -33,7 +35,7 @@ def topic(db, id):
 
 def can_pin(db, competition_id, user):
     row = db.get(ChallengeDetails, competition_id)
-    return bool(user and row and row.owner_id == user.id)
+    return bool(row and can_manage(user, row.owner_id))
 
 
 def describe(post, owner):
@@ -45,11 +47,14 @@ def describe(post, owner):
         "body": post.body,
         "owner": owner,
         "created_at": post.created_at,
+        "hidden": bool(post.hidden),
+        "hidden_reason": post.hidden_reason,
     }
 
 
 @router.get("")
 def feed(
+    response: Response,
     q: str = Query("", max_length=160),
     before: int = Query(2147483647, ge=1),
     competition_id: Optional[int] = None,
@@ -57,17 +62,19 @@ def feed(
     sort: Literal["recent", "newest", "votes", "comments"] = "recent",
     unanswered: bool = False,
     offset: int = Query(0, ge=0, le=100000),
+    limit: int = Query(30, ge=1),
     user=Depends(optional_user),
     db=Depends(get_db),
 ):
     uid = user.id if user else -1
+    limit = min(limit, MAX_LIMIT)
     comments = (
         select(
             ContentReply.target_id.label("post_id"),
             func.count().label("count"),
             func.max(ContentReply.created_at).label("latest"),
         )
-        .where(ContentReply.target_kind == "competition-post")
+        .where(ContentReply.target_kind == "competition-post", ContentReply.hidden == 0)
         .group_by(ContentReply.target_id)
         .subquery()
     )
@@ -120,7 +127,7 @@ def feed(
             CompetitionTopicSettings,
             CompetitionTopicSettings.post_id == CompetitionPost.id,
         )
-        .where(CompetitionPost.id < before)
+        .where(CompetitionPost.id < before, not_hidden(CompetitionPost, user))
     )
     if competition_id is not None:
         if not db.get(Competition, competition_id):
@@ -145,10 +152,11 @@ def feed(
         "votes": score,
         "comments": count,
     }[sort]
+    set_total(response, count_rows(db, query))
     rows = db.execute(
         query.order_by(pinned.desc(), ordering.desc(), CompetitionPost.id.desc())
         .offset(offset)
-        .limit(31)
+        .limit(limit + 1)
     ).all()
     return {
         "items": [
@@ -162,10 +170,10 @@ def feed(
                 "bookmarked": bool(mark),
                 "voted": bool(vote),
             }
-            for post, owner, n, v, pin, activity, mark, vote in rows[:30]
+            for post, owner, n, v, pin, activity, mark, vote in rows[:limit]
         ],
-        "next_offset": offset + 30 if len(rows) > 30 else None,
-        "next_cursor": rows[29][0].id if len(rows) > 30 else None,
+        "next_offset": offset + limit if len(rows) > limit else None,
+        "next_cursor": rows[limit - 1][0].id if len(rows) > limit else None,
         "can_pin": can_pin(db, competition_id, user) if competition_id else False,
     }
 
@@ -245,6 +253,8 @@ def image_file(key: str, db=Depends(get_db)):
 @router.get("/{id}")
 def detail(id: int, user=Depends(optional_user), db=Depends(get_db)):
     row = topic(db, id)
+    if not can_view(row, user):
+        raise HTTPException(404, "Discussion not found")
     settings = db.get(CompetitionTopicSettings, id)
     return {
         **describe(row, db.get(User, row.owner_id).username),

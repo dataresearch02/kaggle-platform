@@ -24,6 +24,7 @@ from .models import (
     now,
 )
 from .competition_metadata import add_file, ensure_profile, require_data_access
+from .permissions import can_manage
 
 router = APIRouter(prefix="/api", tags=["Competition metadata"])
 
@@ -33,7 +34,7 @@ def organizer(db, id, user):
         select(Competition).where(Competition.id == id).with_for_update()
     )
     details = db.get(ChallengeDetails, id)
-    if not competition or not details or details.owner_id != user.id:
+    if not competition or not details or not can_manage(user, details.owner_id):
         raise HTTPException(403, "Only the organizer can edit this competition")
     return competition
 
@@ -55,7 +56,11 @@ def overview_data(db, id):
     )
     return {
         **{key: getattr(overview, key, None) for key in fields},
-        "ends_at": None if source and source.ongoing else competition.deadline,
+        "ends_at": (
+            None
+            if (source and source.ongoing) or competition.deadline.startswith("9999-")
+            else competition.deadline
+        ),
         "prize": competition.prize,
         "description": competition.description,
         "metric": competition.metric,
@@ -218,7 +223,7 @@ async def upload(
         dataset = db.scalar(
             select(Dataset).where(Dataset.id == dataset_id).with_for_update()
         )
-        if not dataset or dataset.owner_id != user.id:
+        if not dataset or not can_manage(user, dataset.owner_id):
             raise HTTPException(403, "Choose a dataset you own")
         content = (DATA_DIR / "uploads" / dataset.storage_key).read_bytes()
         license = dataset.license
@@ -311,7 +316,7 @@ def update_dataset_metadata(
     db: Session = Depends(get_db),
 ):
     dataset = db.scalar(select(Dataset).where(Dataset.id == id).with_for_update())
-    if not dataset or dataset.owner_id != user.id:
+    if not dataset or not can_manage(user, dataset.owner_id):
         raise HTTPException(403, "Only the dataset owner can edit its metadata")
     row = ensure_profile(db, dataset)
     columns = json.loads(row.columns_json)

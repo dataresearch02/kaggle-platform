@@ -62,7 +62,7 @@ Open **http://localhost:5173**. Vite proxies `/api` to FastAPI. This standalone 
 
 Open the **Create** dropdown in the sidebar to choose **Notebook**, **Competition**, **Dataset**, or **Benchmark**. Each section also has its own creation button. **Notebook** opens the full-screen Arena editor immediately with a temporary draft. Name it and click **Save** (or press Ctrl/Cmd+S) to create a permanent notebook with its saved outputs. Closing without Save discards the draft. Other creation options slide in from the right over the selected collection. The panel occupies the right half of the desktop viewport and the full width on smaller screens, with file uploads and metadata fields. Drag a CSV onto the upload area or browse for a file, review its name and size, then publish. Sign in before publishing.
 
-Competitions require a future closing date; benchmarks stay open. Both accept a public UTF-8 test CSV (up to 10 MB, unique `id` plus feature columns) and a private answer CSV (up to 1 MB, exactly `id,prediction`, matching IDs). Participants download test data and a sample submission, join, then upload predictions for automatic scoring and a leaderboard. Choose RMSE, MAE, Accuracy or binary LogLoss; only Accuracy ranks higher scores first. Include the task instructions and training-data links in the description. Evaluation data is fixed after publication. These legacy CSV benchmarks remain under **Benchmarks → CSV benchmarks**. The main Benchmarks page now supports reusable Python tasks, versioned local/API models, isolated CPU evaluation, detailed results and aggregate leaderboards; see [benchmark workflow and provider setup](docs/benchmarks.md).
+By default only hosts and administrators can create competitions and CSV benchmarks; an administrator can allow every member (see [administration](docs/administration.md)). Competitions require a future closing date; benchmarks stay open. Both accept a public UTF-8 test CSV (up to 10 MB, unique `id` plus feature columns) and a private answer CSV (up to 1 MB, exactly `id,prediction`, matching IDs). Participants download test data and a sample submission, join, then upload predictions for automatic scoring and a leaderboard. Choose RMSE, MAE, Accuracy or binary LogLoss; only Accuracy ranks higher scores first. Include the task instructions and training-data links in the description. Evaluation data is fixed after publication. These legacy CSV benchmarks remain under **Benchmarks → CSV benchmarks**. The main Benchmarks page now supports reusable Python tasks, versioned local/API models, isolated CPU evaluation, detailed results and aggregate leaderboards; see [benchmark workflow and provider setup](docs/benchmarks.md).
 
 Creator metadata, test data, answers and scores persist in PostgreSQL. A new `challenge_details` table extends existing competition records without rewriting them; the seeded competition continues to work.
 
@@ -83,7 +83,16 @@ apps/
   api/
     app/
       main.py          REST API, authorization, upload and workflow handlers
-      auth.py          Password hashing and persistent cookie sessions
+      auth.py          Password hashing, persistent cookie sessions and account status checks
+      permissions.py   Roles, can_manage and moderator-hidden visibility helpers
+      migrations.py    Ordered, idempotent startup schema migrations (schema_migrations)
+      admin.py         Administrator API: users, reports, hidden content, audit log, settings
+      admin_cli.py     python -m app.admin_cli promote|demote|suspend|activate <username>
+      moderation.py    Content reports, hide/delete moderation and audit entries
+      site_settings.py Site settings (registration, local login, creation policy, announcement)
+      pagination.py    offset/limit parameters and the X-Total-Count header
+      practice_competitions.py  Idempotent offline import of practice_data/ competitions
+      practice_data/   Prepared scikit-learn practice datasets, answers and metadata
       db.py            SQLite / PostgreSQL connection and storage configuration
       models.py        Relational data model
       schemas.py       Request validation
@@ -99,6 +108,8 @@ apps/
       api.ts           Typed API client
       styles.css       Visual design and responsive layouts
       NotebookWorkspace.tsx  Native notebook cells, safe outputs and kernel controls
+      AdminPage.tsx    #admin area: users, reports, hidden content, audit log, settings
+      Moderation.tsx   Report, hide, unhide and delete controls and hidden-content notices
     Dockerfile
     nginx.conf         Same-origin web/API reverse proxy
 infra/
@@ -115,6 +126,7 @@ compose.yaml           PostgreSQL, API, frontend, JupyterHub and notebook image
 Makefile               Common commands
 docs/
   architecture.md      Boundaries, data flows and deployment assumptions
+  administration.md    Roles, bootstrap admins, settings, moderation, audit log, migrations
   roadmap.md           Feature coverage and remaining milestones
 ```
 
@@ -124,6 +136,13 @@ docs/
 make test
 make build
 docker compose config --quiet
+```
+
+Offline container checks used before deployment (API pytest suite, and web type-check plus production build):
+
+```bash
+python3 deploy/pipeline.py check --only api   # add -k expr to run a subset
+python3 deploy/pipeline.py check --only web
 ```
 
 Browser workflow checks (automatically starts the API and Vite on ports 8000 and 5173):
@@ -140,13 +159,13 @@ The API also exposes `/api/health`. POST/PUT requests require `X-Arena-Client: w
 
 ## Current boundaries
 
-- New datasets and notebooks are private by default, with explicit visibility and sharing controls. Notebook history stores immutable saves and supports restoration into the editor. Catalog search returns at most 100 entries.
+- New datasets and notebooks are private by default, with explicit visibility and sharing controls. Notebook history stores immutable saves and supports restoration into the editor. Catalog lists are paginated with `offset`/`limit` (at most 100 per request) and an `X-Total-Count` header.
 - Competitions support RMSE, MAE, Accuracy and binary LogLoss, team-owned submissions and a public leaderboard. Private leaderboards, submission limits, final selection and anti-cheating controls remain incomplete.
 - Interactive notebooks use the native Arena editor and per-user Jupyter containers. Compose evaluates competition commits through a separate CPU worker with disposable offline containers, cancellation, resource limits and restart recovery. OpenShift can use KubeSpawner and GPU-enabled Kubernetes Jobs; see [the core workflow and OpenShift GPU guide](docs/openshift-gpu.md).
 - Dataset and model details support immutable additional file versions and downloads (10 MB per file). Model cards can contain hosted files and optional external links. Notebook inputs pin file versions. Large artifact storage and hosted inference remain incomplete.
 - Courses contain lessons and per-user completion tracking; exercises are not automatically graded.
-- Accounts, public discussions and replies are implemented. Email verification, password recovery, OAuth, roles, moderation, quotas, and rate limiting remain future work.
-- Schema creation and starter seeding run at startup for the first milestone. Use one API process; schema migrations and coordinated bootstrap are required before scaling.
+- Accounts, public discussions and replies are implemented, with `user`/`host`/`admin` roles, account suspension, site settings, content reports, moderation and an audit log; see [administration](docs/administration.md). Email verification, self-service password recovery, OAuth, quotas and rate limiting remain future work.
+- Schema creation, additive schema migrations, starter seeding and the offline practice competition import run at startup. Use one API process while they run; coordinated bootstrap is required before scaling.
 - The container runtime is intended for a trusted local community. The native editor sanitizes outputs and blocks direct Jupyter UI access; runtime network isolation and resource quotas still need hardening before accepting hostile workloads. The Hub and the trusted evaluation broker mount the container-runtime socket; the API and evaluation job containers do not. Compose binds published ports to loopback. Public deployment needs HTTPS, secure cookies (`COOKIE_SECURE=true`), explicit origins, managed secrets, migrations, backups, upload policy, abuse controls, and isolated compute.
 
 See [architecture](docs/architecture.md) and the [feature roadmap](docs/roadmap.md) for the planned system.

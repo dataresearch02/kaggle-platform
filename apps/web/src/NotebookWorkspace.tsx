@@ -13,9 +13,15 @@ import CodeMirror from '@uiw/react-codemirror';
 import { python } from '@codemirror/lang-python';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
-import Markdown from './Markdown';
+import Markdown, {
+  externalImageHref,
+  externalImageLabel,
+  isLocalResource,
+  isLocalSrcSet,
+} from './Markdown';
 import { markdown } from '@codemirror/lang-markdown';
 import DOMPurify from 'dompurify';
+
 import {
   ArrowDown,
   ArrowUp,
@@ -40,6 +46,57 @@ import {
 } from 'lucide-react';
 import { api } from './api';
 import NotebookPanel, { type Input as NotebookInput } from './NotebookPanel';
+
+/** Sanitize rich HTML output and keep it from loading anything outside this installation. */
+function sanitizeOutputHtml(html: string) {
+  const fragment = DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ['style', 'form', 'input', 'button', 'iframe', 'object', 'embed'],
+    RETURN_DOM_FRAGMENT: true,
+  });
+  // The fragment still belongs to DOMPurify's inert parser document, so nothing loads here.
+  for (const element of Array.from(fragment.querySelectorAll('*'))) {
+    for (const name of ['srcset', 'imagesrcset']) {
+      if (element.hasAttribute(name) && !isLocalSrcSet(element.getAttribute(name)))
+        element.removeAttribute(name);
+    }
+    const urlAttributes = ['poster', 'background', 'lowsrc', 'dynsrc', 'data', 'longdesc'];
+    if (element.tagName !== 'A' && element.tagName !== 'AREA')
+      urlAttributes.push('href', 'xlink:href');
+    for (const name of urlAttributes) {
+      if (element.hasAttribute(name) && !isLocalResource(element.getAttribute(name)))
+        element.removeAttribute(name);
+    }
+    const style = element.getAttribute('style');
+    if (style) {
+      const remaining = style.replace(
+        /url\(\s*(['"]?)([^'"()\s]*)\1\s*\)/gi,
+        (match, _quote: string, url: string) => (isLocalResource(url) ? '' : match),
+      );
+      if (/url\(|image-set|image\(|src\(|@import|\/\/|\\/i.test(remaining))
+        element.removeAttribute('style');
+    }
+    const src = element.getAttribute('src');
+    if (src === null || isLocalResource(src)) continue;
+    if (element.tagName !== 'IMG') {
+      element.removeAttribute('src');
+      continue;
+    }
+    const href = externalImageHref(src);
+    const link = element.ownerDocument.createElement(href ? 'a' : 'span');
+    link.className = 'external-image-link';
+    link.textContent = externalImageLabel(element.getAttribute('alt'));
+    if (href) {
+      link.setAttribute('href', href);
+      link.setAttribute('target', '_blank');
+      link.setAttribute('rel', 'noreferrer noopener');
+    }
+    element.replaceWith(link);
+  }
+  const holder = fragment.ownerDocument.createElement('div');
+  holder.appendChild(fragment);
+  return holder.innerHTML;
+}
 
 const notebookHighlight = syntaxHighlighting(
   HighlightStyle.define([
@@ -138,10 +195,7 @@ export function CellOutput({ output }: { output: Output }) {
       <div
         className="cell-rich-output"
         dangerouslySetInnerHTML={{
-          __html: DOMPurify.sanitize(text(data['text/html']), {
-            USE_PROFILES: { html: true },
-            FORBID_TAGS: ['style', 'form', 'input', 'button', 'iframe', 'object', 'embed'],
-          }),
+          __html: sanitizeOutputHtml(text(data['text/html'])),
         }}
       />
     );

@@ -178,7 +178,7 @@ export default function CompetitionOverview({
           </section>
           {data.source_pages?.['frequently asked questions'] && (
             <section>
-              <h3>Frequently asked questions · Kaggle</h3>
+              <h3>Frequently asked questions · imported source</h3>
               <Markdown>{data.source_pages['frequently asked questions']}</Markdown>
             </section>
           )}

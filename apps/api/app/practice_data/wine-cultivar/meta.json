@@ -1,0 +1,14 @@
+{
+  "slug": "wine-cultivar",
+  "title": "Wine cultivar recognition",
+  "subtitle": "Identify which of three cultivars produced a wine from its chemistry",
+  "metric": "accuracy",
+  "task": "multiclass classification",
+  "target": "cultivar",
+  "about": "13 chemical analysis results for wines grown in the same region of Italy by three cultivars. `cultivar` is 0, 1 or 2.",
+  "license": "CC BY 4.0",
+  "source": "UCI Machine Learning Repository: Wine, S. Aeberhard and M. Forina (1991). Distributed with scikit-learn.",
+  "train_rows": 124,
+  "test_rows": 54,
+  "public_rows": 23
+}

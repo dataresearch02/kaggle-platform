@@ -3,11 +3,13 @@
 import copy
 import json
 from typing import Literal, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
-from .auth import current_user
+from .auth import SUSPENDED, current_user
+from .pagination import count as count_rows, set_total
+from .permissions import can_manage, not_hidden
 from .db import get_db
 from .models import (
     Notebook,
@@ -36,7 +38,8 @@ def optional_user(request: Request, db: Session = Depends(get_db)):
     try:
         return current_user(request, db)
     except HTTPException as exc:
-        if exc.status_code != 401:
+        # Suspended accounts browse public pages as anonymous visitors.
+        if exc.status_code != 401 and exc.detail != SUSPENDED:
             raise
         return None
 
@@ -49,13 +52,14 @@ def require_notebook(db, id, owner=None):
     )
     if not row:
         raise HTTPException(404, "Code not found")
-    if owner and row.owner_id != owner.id:
+    if owner and not can_manage(owner, row.owner_id):
         raise HTTPException(403, "Only the author can publish or share this code")
     return row
 
 
 @router.get("/code")
 def list_code(
+    response: Response,
     competition_id: Optional[int] = None,
     filter: Literal["all", "your-work", "shared", "bookmarks"] = "all",
     q: str = Query(default="", max_length=160),
@@ -112,6 +116,7 @@ def list_code(
         )
     if q.strip():
         query = query.where(Notebook.title.icontains(q.strip(), autoescape=True))
+    set_total(response, count_rows(db, query))
     if cursor:
         query = query.where(Notebook.id < cursor)
     rows = (
@@ -189,6 +194,8 @@ def view_code(id: int, user=Depends(optional_user), db: Session = Depends(get_db
         "owner_id": row.owner_id,
         "owner": db.get(User, row.owner_id).username,
         "created_at": row.created_at,
+        "hidden": bool(row.hidden),
+        "hidden_reason": row.hidden_reason,
         "working_competition_id": (
             working.competition_id
             if working and user and user.id == row.owner_id
@@ -481,7 +488,11 @@ def code_comments(
     rows = db.execute(
         select(NotebookComment, User.username)
         .join(User, User.id == NotebookComment.owner_id)
-        .where(NotebookComment.notebook_id == id, NotebookComment.id > after)
+        .where(
+            NotebookComment.notebook_id == id,
+            NotebookComment.id > after,
+            not_hidden(NotebookComment, user),
+        )
         .order_by(NotebookComment.id)
         .limit(51)
     ).all()
@@ -493,6 +504,8 @@ def code_comments(
                 "username": username,
                 "body": row.body,
                 "created_at": row.created_at,
+                "hidden": bool(row.hidden),
+                "hidden_reason": row.hidden_reason,
             }
             for row, username in rows[:50]
         ],
@@ -523,6 +536,8 @@ def add_code_comment(
         "username": user.username,
         "body": row.body,
         "created_at": row.created_at,
+        "hidden": False,
+        "hidden_reason": "",
     }
 
 
@@ -534,7 +549,7 @@ def delete_code_comment(
     row = db.get(NotebookComment, comment_id)
     if not row or row.notebook_id != id:
         raise HTTPException(404, "Comment not found")
-    if row.owner_id != user.id:
+    if not can_manage(user, row.owner_id):
         raise HTTPException(403, "You can only delete your own comments")
     from .engagement import remove_engagement
 

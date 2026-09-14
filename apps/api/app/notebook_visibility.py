@@ -1,20 +1,24 @@
 from fastapi import HTTPException
-from sqlalchemy import select, or_
+from sqlalchemy import and_, select, or_
 from .models import Notebook, NotebookWorkingCopy, NotebookShare
+from .permissions import not_hidden
 
 
 def visible_notebooks(user):
     private = select(NotebookWorkingCopy.notebook_id).where(
         NotebookWorkingCopy.private == 1
     )
-    return or_(
-        Notebook.id.not_in(private),
-        Notebook.owner_id == (user.id if user else -1),
-        Notebook.id.in_(
-            select(NotebookShare.notebook_id).where(
-                NotebookShare.user_id == (user.id if user else -1)
-            )
+    return and_(
+        or_(
+            Notebook.id.not_in(private),
+            Notebook.owner_id == (user.id if user else -1),
+            Notebook.id.in_(
+                select(NotebookShare.notebook_id).where(
+                    NotebookShare.user_id == (user.id if user else -1)
+                )
+            ),
         ),
+        not_hidden(Notebook, user),
     )
 
 

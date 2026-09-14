@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from .auth import current_user
 from .code_pages import optional_user
 from .db import get_db
+from .permissions import can_manage, can_view, not_hidden
 from .models import (
     Comment,
     NotebookComment,
@@ -45,7 +46,7 @@ def require_target(db, kind, id, user=None):
     row = db.scalar(
         select(TARGETS[kind]).where(TARGETS[kind].id == id).with_for_update()
     )
-    if row is None:
+    if row is None or (hasattr(row, "hidden") and not can_view(row, user)):
         raise HTTPException(404, "Conversation not found")
     if kind == "notebook-comment":
         from .notebook_visibility import require_visible
@@ -80,6 +81,8 @@ def reply_json(row, username):
         "username": username,
         "body": row.body,
         "created_at": row.created_at,
+        "hidden": bool(row.hidden),
+        "hidden_reason": row.hidden_reason,
     }
 
 
@@ -101,6 +104,7 @@ def read(
             ContentReply.target_kind == kind,
             ContentReply.target_id == id,
             ContentReply.id > after,
+            not_hidden(ContentReply, user),
         )
         .order_by(ContentReply.id)
         .limit(51)
@@ -154,7 +158,7 @@ def remove_reply(
     row = db.get(ContentReply, reply_id)
     if not row or row.target_kind != kind or row.target_id != id:
         raise HTTPException(404, "Reply not found")
-    if row.owner_id != user.id:
+    if not can_manage(user, row.owner_id):
         raise HTTPException(403, "You can only delete your own replies")
     if kind == "competition-post":
         remove_engagement(db, "competition-comment", [row.id])

@@ -333,12 +333,15 @@ def catalog(
     if kind == "dataset":
         query = query.where(visible_datasets(user))
     if kind == "model":
+        from .permissions import not_hidden
+
         query = query.where(
+            not_hidden(ModelCard, user),
             ModelCard.id.in_(
                 select(ArtifactVersion.resource_id).where(
                     ArtifactVersion.kind == "models"
                 )
-            )
+            ),
         )
     if kind == "notebook":
         query = query.where(

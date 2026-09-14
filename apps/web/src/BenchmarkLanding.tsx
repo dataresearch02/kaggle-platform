@@ -3,7 +3,6 @@ import {
   Plus,
   Search,
   ChevronDown,
-  ArrowUpRight,
   BarChart3,
   Boxes,
   FlaskConical,
@@ -71,14 +70,16 @@ export default function BenchmarkLanding({
             Discover benchmarks and leaderboards from the Arena community. Build reusable tasks and
             compare models on what matters to you.
           </p>
-          <a
-            className="benchmark-guide-link"
-            href="https://www.kaggle.com/docs/benchmarks"
-            target="_blank"
-            rel="noreferrer"
-          >
-            <BookOpen size={17} /> About task-based benchmarks <ArrowUpRight size={15} />
-          </a>
+          <details className="benchmark-guide">
+            <summary>
+              <BookOpen size={17} /> About task-based benchmarks
+            </summary>
+            <p>
+              A benchmark groups reusable Python tasks and versioned models. Each run evaluates a
+              model against those tasks in an isolated CPU job, and the results feed an aggregate
+              leaderboard.
+            </p>
+          </details>
           <div className="benchmark-hero-actions">
             <details className="benchmark-create-menu" ref={menu}>
               <summary className="button">

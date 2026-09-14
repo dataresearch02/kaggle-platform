@@ -12,11 +12,11 @@ a usable UI, persistence, and workflow verification before it is complete.
 - [ ] Evaluation workers: independent job containers, durable queue, cancellation, recovery and limits.
 - [ ] Compute: CPU/GPU configuration, availability checks and usage tracking.
 - [ ] Storage: multiple files, artifact versions, safe previews/downloads, dataset/model attachments.
-- [ ] Accounts: recovery, verification, roles and moderation.
+- [ ] Accounts: recovery and verification. Roles, suspension, reports, moderation and the audit log are implemented ([administration](administration.md)).
 - [ ] Community: notifications, following, profiles and reputation.
 - [ ] Learning: graded exercises, hints and assessments.
 - [ ] Automation: scheduled notebooks and supported API credentials.
-- [ ] Operations: migrations, backup/restore verification, observability and deployment readiness.
+- [ ] Operations: backup/restore verification, observability and deployment readiness. Additive startup schema migrations are implemented.
 
 GPU execution needs GPU hardware and a configured container runtime; configuration
 alone does not count as a verified GPU implementation. OpenShift deployment stays

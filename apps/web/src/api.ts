@@ -1,4 +1,15 @@
-export type User = { id: number; username: string };
+export type User = {
+  id: number;
+  username: string;
+  role?: 'user' | 'host' | 'admin';
+  status?: 'active' | 'suspended';
+  can_create_competitions?: boolean;
+};
+export type Site = {
+  registration_open: boolean;
+  local_login_enabled: boolean;
+  announcement: string;
+};
 export type Item = {
   id: number;
   title: string;
@@ -15,8 +26,11 @@ export type Item = {
   source_url?: string;
   rules_url?: string;
   rules_content?: string;
+  submission_columns?: string[];
   prize?: string;
-  deadline?: string;
+  deadline?: string | null;
+  hidden?: boolean | number;
+  hidden_reason?: string;
   code?: string;
   duration?: string;
   lessons?: { title: string; body: string; code: string }[];
@@ -27,7 +41,7 @@ export type Item = {
   participants?: number;
   leaderboard?: { rank: number; username: string; score: number }[];
 };
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request(path: string, init: RequestInit = {}) {
   const response = await fetch(`/api${path}`, {
     ...init,
     credentials: 'same-origin',
@@ -50,5 +64,16 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
           : `Request failed (${response.status})`,
     );
   }
+  return response;
+}
+export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await request(path, init);
   return response.status === 204 ? (undefined as T) : response.json();
+}
+/** A list page; the total comes from the X-Total-Count header. */
+export async function apiPage<T>(path: string): Promise<{ items: T[]; total: number }> {
+  const response = await request(path);
+  const items = (await response.json()) as T[];
+  const total = Number(response.headers.get('X-Total-Count'));
+  return { items, total: Number.isFinite(total) && total >= items.length ? total : items.length };
 }

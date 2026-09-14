@@ -212,8 +212,17 @@ export default function CreatePage({
                   </label>
                   <label>
                     Model or documentation URL (optional)
-                    <input name="url" type="url" placeholder="https://…" />
+                    <input
+                      name="url"
+                      type="url"
+                      placeholder="https://…"
+                      aria-describedby="model-url-hint"
+                    />
                   </label>
+                  <small id="model-url-hint">
+                    This link is shown as an external reference. It will not be reachable from an
+                    offline installation.
+                  </small>
                   <small>Create the card, then upload versioned files from its details page.</small>
                 </>
               )}

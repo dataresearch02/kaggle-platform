@@ -3,8 +3,8 @@ import DiscussionThread from './DiscussionThread';
 import Markdown from './Markdown';
 import CompetitionTeam from './CompetitionTeam';
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Trophy, Users, Calendar, Check, ArrowUpRight } from 'lucide-react';
-import { api, type Item, type User } from './api';
+import { ArrowLeft, Trophy, Users, Calendar, Check } from 'lucide-react';
+import { api, apiPage, type Item, type User } from './api';
 import CodeList from './CodeList';
 import CompetitionOverview from './CompetitionOverview';
 import CompetitionData from './CompetitionData';
@@ -23,6 +23,8 @@ export const competitionTabs = [
 ] as const;
 export type CompetitionTab = (typeof competitionTabs)[number];
 type Submission = { id: number; filename: string; score: number; created_at: string };
+type LeaderboardRow = NonNullable<Item['leaderboard']>[number];
+const PAGE_SIZE = 50;
 export default function CompetitionPage({
   id,
   tab,
@@ -43,6 +45,11 @@ export default function CompetitionPage({
   const [item, setItem] = useState<Item | null>(null);
   const [joined, setJoined] = useState(false);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [submissionTotal, setSubmissionTotal] = useState(0);
+  const [board, setBoard] = useState<{ items: LeaderboardRow[]; total: number }>({
+    items: [],
+    total: 0,
+  });
   const [resources, setResources] = useState<Item[]>([]);
   const [owned, setOwned] = useState<WorkItem[]>([]);
   const [resourceId, setResourceId] = useState('');
@@ -61,13 +68,18 @@ export default function CompetitionPage({
     Promise.all([
       api<Item>(base),
       user ? api<{ joined: boolean }>(`${base}/membership`) : Promise.resolve({ joined: false }),
-      user ? api<Submission[]>(`${base}/submissions`) : Promise.resolve([]),
+      user
+        ? apiPage<Submission>(`${base}/submissions?limit=${PAGE_SIZE}`)
+        : Promise.resolve({ items: [], total: 0 }),
+      apiPage<LeaderboardRow>(`${base}/leaderboard?limit=${PAGE_SIZE}`),
     ])
-      .then(([competition, member, results]) => {
+      .then(([competition, member, results, leaders]) => {
         if (alive) {
           setItem(competition);
           setJoined(member.joined);
-          setSubmissions(results);
+          setSubmissions(results.items);
+          setSubmissionTotal(results.total);
+          setBoard(leaders);
         }
       })
       .catch((e) => {
@@ -110,6 +122,25 @@ export default function CompetitionPage({
       alive = false;
     };
   }, [id, tab, user?.id, revision]);
+  async function more(kind: 'leaderboard' | 'submissions') {
+    setError('');
+    try {
+      if (kind === 'leaderboard') {
+        const next = await apiPage<LeaderboardRow>(
+          `${base}/leaderboard?offset=${board.items.length}&limit=${PAGE_SIZE}`,
+        );
+        setBoard((old) => ({ items: [...old.items, ...next.items], total: next.total }));
+      } else {
+        const next = await apiPage<Submission>(
+          `${base}/submissions?offset=${submissions.length}&limit=${PAGE_SIZE}`,
+        );
+        setSubmissions((old) => [...old, ...next.items]);
+        setSubmissionTotal(next.total);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
   async function act(action: () => Promise<void>) {
     if (!user) {
       signIn();
@@ -178,7 +209,7 @@ export default function CompetitionPage({
         </span>
         <span>
           <Calendar size={16} />
-          Closes {item.deadline ? new Date(item.deadline).toLocaleString() : '—'}
+          {item.deadline ? `Closes ${new Date(item.deadline).toLocaleString()}` : 'No deadline'}
         </span>
         <span>
           {item.metric} · {item.metric === 'Accuracy' ? 'higher' : 'lower'} is better
@@ -287,9 +318,14 @@ export default function CompetitionPage({
                     <h3>{resource.title}</h3>
                     <small>By {resource.owner}</small>
                     <p>{resource.description}</p>
-                    <a href={resource.url} target="_blank" rel="noreferrer" className="text-button">
-                      View model <ArrowUpRight size={16} />
-                    </a>
+                    {resource.url && (
+                      <p className="external-reference">
+                        External reference (not available offline):{' '}
+                        <a href={resource.url} target="_blank" rel="noreferrer noopener">
+                          {resource.url}
+                        </a>
+                      </p>
+                    )}
                   </article>
                 ))}
               </div>
@@ -316,7 +352,8 @@ export default function CompetitionPage({
         {tab === 'leaderboard' && (
           <>
             <h2>Leaderboard</h2>
-            {item.leaderboard?.length ? (
+            {board.items.length ? (
+              <>
               <div className="table-scroll">
                 <table>
                   <thead>
@@ -327,7 +364,7 @@ export default function CompetitionPage({
                     </tr>
                   </thead>
                   <tbody>
-                    {item.leaderboard.map((row) => (
+                    {board.items.map((row) => (
                       <tr key={row.username}>
                         <td>#{row.rank}</td>
                         <td>{row.username}</td>
@@ -337,10 +374,21 @@ export default function CompetitionPage({
                   </tbody>
                 </table>
               </div>
+              {board.items.length < board.total && (
+                <div className="load-more-row">
+                  <span className="muted">
+                    Showing {board.items.length} of {board.total}
+                  </span>
+                  <button className="button secondary" onClick={() => void more('leaderboard')}>
+                    Load more
+                  </button>
+                </div>
+              )}
+              </>
             ) : (
               <p className="muted">
                 {item.evaluation_available === false
-                  ? 'Local scoring is deferred. Kaggle rankings are not reproduced here.'
+                  ? 'Local scoring is deferred. Rankings from the original host are not reproduced here.'
                   : 'No submissions yet. Set the first baseline.'}
               </p>
             )}
@@ -394,6 +442,7 @@ export default function CompetitionPage({
                 <h3>Your submissions</h3>
                 <p className="muted">Includes submissions from your current team.</p>
                 {submissions.length ? (
+                  <>
                   <div className="table-scroll">
                     <table>
                       <thead>
@@ -414,6 +463,20 @@ export default function CompetitionPage({
                       </tbody>
                     </table>
                   </div>
+                  {submissions.length < submissionTotal && (
+                    <div className="load-more-row">
+                      <span className="muted">
+                        Showing {submissions.length} of {submissionTotal}
+                      </span>
+                      <button
+                        className="button secondary"
+                        onClick={() => void more('submissions')}
+                      >
+                        Load more
+                      </button>
+                    </div>
+                  )}
+                  </>
                 ) : (
                   <p className="muted">You have not submitted predictions yet.</p>
                 )}
@@ -424,19 +487,28 @@ export default function CompetitionPage({
         {tab === 'rules' &&
           (item.rules_url ? (
             <>
-              <h2>Official competition rules</h2>
-              <Markdown>{item.rules_content || 'Read the full rules at the source link.'}</Markdown>
-              <a
-                className="button secondary"
-                href={item.rules_url}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Read the full rules on Kaggle
-              </a>
+              <h2>Competition rules</h2>
+              <Markdown>
+                {item.rules_content || 'The rules text was not included in this import.'}
+              </Markdown>
+              <p className="external-reference">
+                Original rules (external reference, not available offline):{' '}
+                <a href={item.rules_url} target="_blank" rel="noreferrer noopener">
+                  {item.rules_url}
+                </a>
+              </p>
+              {item.source_url && (
+                <p className="external-reference">
+                  Source (external reference, not available offline):{' '}
+                  <a href={item.source_url} target="_blank" rel="noreferrer noopener">
+                    {item.source_url}
+                  </a>
+                </p>
+              )}
               <p className="muted">
-                Joining in Arena does not enroll you on Kaggle. Local scoring is deferred; the
-                original submission format is PassengerId,Survived.
+                Joining in Arena does not enroll you with the original host. Local scoring is
+                deferred; the original submission format is{' '}
+                {(item.submission_columns || ['id', 'prediction']).join(',')}.
               </p>
             </>
           ) : (
@@ -445,21 +517,21 @@ export default function CompetitionPage({
               <ul className="competition-rules">
                 <li>Sign in and join the competition before submitting predictions.</li>
                 <li>
-                  Submit a UTF-8 CSV with exactly these columns in order: id,prediction. Include one
-                  finite numeric prediction for every required ID, with no missing, duplicate, or
-                  extra IDs. Predictions must be between -1e12 and 1e12.
+                  Submit a UTF-8 CSV with exactly these columns in order:{' '}
+                  {(item.submission_columns || ['id', 'prediction']).join(',')}. Include one finite
+                  numeric prediction for every required ID, with no missing, duplicate, or extra
+                  IDs. Predictions must be between -1e12 and 1e12.
                 </li>
                 <li>Submission files must be no larger than 1 MB.</li>
                 <li>
-                  Submissions close at{' '}
                   {item.deadline
-                    ? new Date(item.deadline).toLocaleString()
-                    : 'the competition deadline'}
-                  .
+                    ? `Submissions close at ${new Date(item.deadline).toLocaleString()}.`
+                    : 'This practice competition has no deadline.'}
                 </li>
                 <li>
-                  The leaderboard uses each participant’s best {item.metric} score. Lower is better;
-                  equal scores are ordered by username.
+                  The leaderboard uses each participant’s best {item.metric} score.{' '}
+                  {item.metric === 'Accuracy' ? 'Higher' : 'Lower'} is better; equal scores are
+                  ordered by username.
                 </li>
               </ul>
               <p className="muted">No additional organizer-specific rules have been published.</p>

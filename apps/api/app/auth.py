@@ -9,6 +9,13 @@ from .db import get_db
 from .models import Session, User
 
 COOKIE = "arena_session"
+SUSPENDED = "This account is suspended. Contact an administrator for help."
+
+
+def require_active(user):
+    """Suspended accounts keep their data but cannot sign in or use credentials."""
+    if user.status == "suspended":
+        raise HTTPException(403, SUSPENDED)
 
 
 def hash_password(password):
@@ -74,6 +81,7 @@ def current_user(request: Request, db: DBSession = Depends(get_db)):
         user = db.get(User, credential.user_id)
         if not user:
             raise HTTPException(401, "API token owner no longer exists")
+        require_active(user)
         credential.last_used_at = now()
         db.commit()
         return user
@@ -86,4 +94,5 @@ def current_user(request: Request, db: DBSession = Depends(get_db)):
     user = db.get(User, session.user_id)
     if not user:
         raise HTTPException(401, "Session is no longer valid")
+    require_active(user)
     return user

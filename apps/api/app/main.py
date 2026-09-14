@@ -4,6 +4,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -25,7 +26,18 @@ from sqlalchemy import delete, func, select, text, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DBSession
 
-from .auth import COOKIE, current_user, hash_password, new_session, verify_password
+from .auth import (
+    COOKIE,
+    SUSPENDED,
+    current_user,
+    hash_password,
+    new_session,
+    verify_password,
+)
+from .moderation import record
+from .pagination import Page, count, page, set_total, window
+from .permissions import can_manage, is_admin, not_hidden
+from .site_settings import can_create_competitions, setting
 from .db import Base, DATA_DIR, SessionLocal, engine, get_db
 from .models import (
     ChallengeDetails,
@@ -91,12 +103,28 @@ from .notebook_runtime import router as notebook_router, notebook_document
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(engine)
+    from .migrations import run_migrations
+
+    run_migrations(engine)
     from .storage_indexes import ensure_storage_indexes
 
     ensure_storage_indexes(engine)
     with SessionLocal() as db:
         seed(db)
+        from .admin import bootstrap_admins
+
+        bootstrap_admins(db)
         backfill_metadata(db)
+        if os.getenv("ARENA_IMPORT_PRACTICE", "true").lower() not in ("0", "false"):
+            from .practice_competitions import import_practice_competitions
+
+            try:
+                import_practice_competitions(db)
+            except Exception:
+                db.rollback()
+                logging.getLogger(__name__).exception(
+                    "Practice competition import failed; it is retried at next start"
+                )
         migrate_forks(db, recover=os.getenv("EVALUATION_BACKEND") != "isolated")
     commits = (
         asyncio.create_task(commit_worker())
@@ -154,6 +182,13 @@ app.include_router(engagement_router)
 from .accounts import router as account_router
 
 app.include_router(account_router)
+from .moderation import router as moderation_router
+from .admin import router as admin_router
+from .site_settings import router as site_router
+
+app.include_router(moderation_router)
+app.include_router(admin_router)
+app.include_router(site_router)
 from .artifacts import router as artifacts_router, delete_artifacts
 
 app.include_router(artifacts_router)
@@ -197,7 +232,7 @@ def require(db, cls, id):
 
 
 def public(obj, db=None):
-    hidden = {"password_hash", "solution", "storage_key"}
+    hidden = {"password_hash", "solution", "solution_usage", "storage_key"}
     result = {
         c.name: getattr(obj, c.name)
         for c in obj.__table__.columns
@@ -214,6 +249,8 @@ def public(obj, db=None):
         from .models import CompetitionSource
 
         result["evaluation_available"] = bool(json.loads(obj.solution))
+        if obj.deadline.startswith("9999-"):
+            result["deadline"] = None  # Practice competitions have no deadline.
         source = db.get(CompetitionSource, obj.id)
         if source:
             result.update(
@@ -236,13 +273,17 @@ def public(obj, db=None):
     return result
 
 
-def listing(db, cls, q):
+def listing(db, cls, q, pagination=None, response=None, where=None):
     query = select(cls)
     if q:
         query = query.where(cls.title.ilike(f"%{q[:100]}%"))
-    return [
-        public(row, db) for row in db.scalars(query.order_by(cls.id.desc()).limit(100))
-    ]
+    if where is not None:
+        query = query.where(where)
+    if response is not None:
+        set_total(response, count(db, query))
+    query = query.order_by(cls.id.desc())
+    query = window(query, pagination) if pagination else query.limit(100)
+    return [public(row, db) for row in db.scalars(query)]
 
 
 async def read_upload(file, limit=10 * 1024 * 1024):
@@ -268,9 +309,17 @@ def stats(db: DBSession = Depends(get_db)):
             ("datasets", Dataset),
             ("competitions", Competition),
             ("notebooks", Notebook),
-            ("learners", User),
         ]
     }
+    # Internal curator accounts (the seed user and sample importers) are not people.
+    result["learners"] = db.scalar(
+        select(func.count())
+        .select_from(User)
+        .where(
+            User.username != "arena",
+            User.username.not_like("examples\\_%", escape="\\"),
+        )
+    )
 
     result["benchmarks"] = db.scalar(
         select(func.count())
@@ -283,6 +332,8 @@ def stats(db: DBSession = Depends(get_db)):
 
 @app.post("/api/auth/register", status_code=201)
 def register(data: Credentials, response: Response, db: DBSession = Depends(get_db)):
+    if not setting(db, "registration_open"):
+        raise HTTPException(403, "Registration is closed on this site")
     user = User(
         username=data.username.lower(), password_hash=hash_password(data.password)
     )
@@ -303,7 +354,7 @@ def register(data: Credentials, response: Response, db: DBSession = Depends(get_
         )
     )
     db.commit()
-    return public(user)
+    return account_json(db, user)
 
 
 @app.post("/api/auth/login")
@@ -313,13 +364,25 @@ def login(data: Credentials, response: Response, db: DBSession = Depends(get_db)
     stored = user.password_hash if user else "0" * 32 + ":" + "0" * 128
     if not verify_password(data.password, stored) or not user:
         raise HTTPException(401, "Incorrect username or password")
+    if user.status == "suspended":
+        raise HTTPException(403, SUSPENDED)
+    # Administrators keep local sign-in as a break-glass path.
+    if not setting(db, "local_login_enabled") and not is_admin(user):
+        raise HTTPException(403, "Local sign-in is disabled on this site")
     new_session(db, user, response)
-    return public(user)
+    return account_json(db, user)
+
+
+def account_json(db, user):
+    return {
+        **public(user),
+        "can_create_competitions": can_create_competitions(db, user),
+    }
 
 
 @app.get("/api/auth/me")
-def me(user: User = Depends(current_user)):
-    return public(user)
+def me(user: User = Depends(current_user), db: DBSession = Depends(get_db)):
+    return account_json(db, user)
 
 
 @app.post("/api/auth/logout", status_code=204)
@@ -336,26 +399,25 @@ def logout(request: Request, response: Response, db: DBSession = Depends(get_db)
 
 @app.get("/api/datasets")
 def datasets(
+    response: Response,
     q: str = "",
     before: int = 2147483647,
+    pagination: Page = Depends(page),
     user=Depends(optional_user),
     db: DBSession = Depends(get_db),
 ):
+    query = select(Dataset).where(
+        visible_datasets(user),
+        Dataset.id < before,
+        or_(
+            Dataset.title.icontains(q[:100], autoescape=True),
+            Dataset.filename.icontains(q[:100], autoescape=True),
+        ),
+    )
+    set_total(response, count(db, query))
     return [
         public(row, db)
-        for row in db.scalars(
-            select(Dataset)
-            .where(
-                visible_datasets(user),
-                Dataset.id < before,
-                or_(
-                    Dataset.title.icontains(q[:100], autoescape=True),
-                    Dataset.filename.icontains(q[:100], autoescape=True),
-                ),
-            )
-            .order_by(Dataset.id.desc())
-            .limit(100)
-        )
+        for row in db.scalars(window(query.order_by(Dataset.id.desc()), pagination))
     ]
 
 
@@ -460,13 +522,17 @@ def challenge_query(kind):
 
 @app.get("/api/competitions")
 def competitions(
+    response: Response,
     q: str = "",
     status: Literal["all", "open", "closed"] = "all",
     category: str = "",
     sort: Literal["newest", "closing", "title"] = "newest",
+    pagination: Page = Depends(page),
     db: DBSession = Depends(get_db),
 ):
-    return challenge_listing(db, q, "competition", status, category, sort)
+    return challenge_listing(
+        db, q, "competition", status, category, sort, pagination, response
+    )
 
 
 @app.get("/api/competitions/filters")
@@ -479,7 +545,16 @@ def competition_filters(db: DBSession = Depends(get_db)):
     return {"categories": sorted(category for category in categories if category)}
 
 
-def challenge_listing(db, q, kind, status="all", category="", sort="newest"):
+def challenge_listing(
+    db,
+    q,
+    kind,
+    status="all",
+    category="",
+    sort="newest",
+    pagination=None,
+    response=None,
+):
     query = challenge_query(kind)
     if q.strip():
         term = f"%{q.strip()[:100]}%"
@@ -501,12 +576,22 @@ def challenge_listing(db, q, kind, status="all", category="", sort="newest"):
         rows.sort(key=lambda row: (deadline(row) <= now, deadline(row), -row.id))
     elif sort == "title":
         rows.sort(key=lambda row: (row.title.casefold(), -row.id))
-    return [public(row, db) for row in rows[:100]]
+    if response is not None:
+        set_total(response, len(rows))
+    rows = pagination.slice(rows) if pagination else rows[:100]
+    return [public(row, db) for row in rows]
 
 
 @app.get("/api/benchmarks")
-def benchmarks(q: str = "", db: DBSession = Depends(get_db)):
-    return challenge_listing(db, q, "benchmark")
+def benchmarks(
+    response: Response,
+    q: str = "",
+    pagination: Page = Depends(page),
+    db: DBSession = Depends(get_db),
+):
+    return challenge_listing(
+        db, q, "benchmark", pagination=pagination, response=response
+    )
 
 
 @app.post("/api/competitions", status_code=201)
@@ -525,6 +610,11 @@ async def create_challenge(
     db: DBSession = Depends(get_db),
 ):
     kind = "benchmark" if request.url.path.endswith("benchmarks") else "competition"
+    if not can_create_competitions(db, user):
+        raise HTTPException(
+            403,
+            "Only hosts and administrators can create competitions and benchmarks here",
+        )
     closes = datetime(9999, 1, 1, tzinfo=timezone.utc)
     if kind == "competition":
         try:
@@ -559,6 +649,7 @@ async def create_challenge(
     )
     db.flush()
     initialize_competition(db, obj)
+    record(db, user, "competition.create", kind, obj.id, {"title": obj.title})
     db.commit()
     return public(obj, db)
 
@@ -569,13 +660,42 @@ def competition(id: int, db: DBSession = Depends(get_db)):
     obj = require(db, Competition, id)
     from .team_scoring import leaderboard
 
+    template = db.scalar(
+        select(CompetitionDataFile)
+        .where(
+            CompetitionDataFile.competition_id == id,
+            CompetitionDataFile.role == "submission",
+        )
+        .order_by(CompetitionDataFile.id)
+        .limit(1)
+    )
     return {
         **public(obj, db),
         "participants": db.scalar(
             select(func.count()).select_from(Entry).where(Entry.competition_id == id)
         ),
         "leaderboard": leaderboard(db, obj),
+        "submission_columns": (
+            [column["name"] for column in json.loads(template.columns_json)]
+            if template
+            else ["id", "prediction"]
+        ),
     }
+
+
+@app.get("/api/benchmarks/{id}/leaderboard")
+@app.get("/api/competitions/{id}/leaderboard")
+def competition_leaderboard(
+    id: int,
+    response: Response,
+    pagination: Page = Depends(page),
+    db: DBSession = Depends(get_db),
+):
+    from .team_scoring import leaderboard, leaderboard_size
+
+    obj = require(db, Competition, id)
+    set_total(response, leaderboard_size(db, obj))
+    return leaderboard(db, obj, pagination.offset, pagination.limit)
 
 
 @app.post("/api/benchmarks/{id}/join")
@@ -637,13 +757,13 @@ def test_features(
 ):
     require(db, Competition, id)
     require_data_access(db, id, user)
-    details = db.get(ChallengeDetails, id)
+    from .competition_metadata import test_csv
+
+    content = test_csv(db, id)
+    if content is None:
+        raise HTTPException(404, "Test data is not available for this competition")
     return Response(
-        (
-            details.test_csv
-            if details
-            else "id,temperature,working_day\n7,20,1\n8,10,1\n9,23,0\n"
-        ),
+        content,
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="test.csv"'},
     )
@@ -693,37 +813,41 @@ async def submit(
 @app.get("/api/benchmarks/{id}/submissions")
 @app.get("/api/competitions/{id}/submissions")
 def my_submissions(
-    id: int, user: User = Depends(current_user), db: DBSession = Depends(get_db)
+    id: int,
+    response: Response,
+    pagination: Page = Depends(page),
+    user: User = Depends(current_user),
+    db: DBSession = Depends(get_db),
 ):
     from .team_scoring import history_filter
 
     require(db, Competition, id)
+    query = select(Submission).where(
+        history_filter(db, id, user), Submission.competition_id == id
+    )
+    set_total(response, count(db, query))
     return [
         public(row)
-        for row in db.scalars(
-            select(Submission)
-            .where(history_filter(db, id, user), Submission.competition_id == id)
-            .order_by(Submission.id.desc())
-            .limit(100)
-        )
+        for row in db.scalars(window(query.order_by(Submission.id.desc()), pagination))
     ]
 
 
 @app.get("/api/notebooks")
 def notebooks(
-    q: str = "", user=Depends(optional_user), db: DBSession = Depends(get_db)
+    response: Response,
+    q: str = "",
+    pagination: Page = Depends(page),
+    user=Depends(optional_user),
+    db: DBSession = Depends(get_db),
 ):
+    query = select(Notebook).where(
+        visible_notebooks(user),
+        Notebook.title.icontains(q[:100], autoescape=True),
+    )
+    set_total(response, count(db, query))
     return [
         public(row, db)
-        for row in db.scalars(
-            select(Notebook)
-            .where(
-                visible_notebooks(user),
-                Notebook.title.icontains(q[:100], autoescape=True),
-            )
-            .order_by(Notebook.id.desc())
-            .limit(100)
-        )
+        for row in db.scalars(window(query.order_by(Notebook.id.desc()), pagination))
     ]
 
 
@@ -757,7 +881,7 @@ def save_notebook(
     db: DBSession = Depends(get_db),
 ):
     obj = require(db, Notebook, id)
-    if obj.owner_id != user.id:
+    if not can_manage(user, obj.owner_id):
         raise HTTPException(
             403, "Only the owner can edit this notebook; save your own copy"
         )
@@ -788,10 +912,15 @@ def download_notebook(
 
 
 @app.get("/api/courses")
-def courses(q: str = "", db: DBSession = Depends(get_db)):
+def courses(
+    response: Response,
+    q: str = "",
+    pagination: Page = Depends(page),
+    db: DBSession = Depends(get_db),
+):
     return [
         {**item, "lessons": json.loads(item["lessons"])}
-        for item in listing(db, Course, q)
+        for item in listing(db, Course, q, pagination, response)
     ]
 
 
@@ -835,8 +964,13 @@ def complete(
 
 
 @app.get("/api/discussions")
-def discussions(q: str = "", db: DBSession = Depends(get_db)):
-    return listing(db, Discussion, q)
+def discussions(
+    response: Response,
+    q: str = "",
+    pagination: Page = Depends(page),
+    db: DBSession = Depends(get_db),
+):
+    return listing(db, Discussion, q, pagination, response)
 
 
 @app.post("/api/discussions", status_code=201)
@@ -880,8 +1014,14 @@ def add_comment(
 
 
 @app.get("/api/models")
-def models(q: str = "", db: DBSession = Depends(get_db)):
-    return listing(db, ModelCard, q)
+def models(
+    response: Response,
+    q: str = "",
+    pagination: Page = Depends(page),
+    user=Depends(optional_user),
+    db: DBSession = Depends(get_db),
+):
+    return listing(db, ModelCard, q, pagination, response, not_hidden(ModelCard, user))
 
 
 @app.get("/api/models/{id}")
@@ -926,6 +1066,15 @@ WORK_MODELS = {
     "models": ModelCard,
     "benchmark-collections": BenchmarkCollection,
 }
+# Audit and moderation names for work kinds.
+AUDIT_KINDS = {
+    "datasets": "dataset",
+    "notebooks": "code",
+    "models": "model",
+    "benchmark-collections": "benchmark-collection",
+    "competitions": "competition",
+    "benchmarks": "benchmark",
+}
 
 
 @app.get("/api/work")
@@ -961,19 +1110,31 @@ def your_work(user: User = Depends(current_user), db: DBSession = Depends(get_db
 
 
 def owned_work(kind, id, user, db):
+    """Work the user may change: their own, or anything for administrators."""
     if kind in WORK_MODELS:
         row = db.get(WORK_MODELS[kind], id)
-        owner_id = row.owner_id if row else None
     elif kind in ("competitions", "benchmarks"):
         details = db.get(ChallengeDetails, id)
         expected = "benchmark" if kind == "benchmarks" else "competition"
-        row = db.get(Competition, id) if details and details.kind == expected else None
-        owner_id = details.owner_id if row else None
+        # Legacy competitions without creator details can be managed by admins.
+        allowed = (
+            details.kind == expected
+            if details
+            else kind == "competitions" and is_admin(user)
+        )
+        row = db.get(Competition, id) if allowed else None
     else:
         raise HTTPException(404, "Work not found")
-    if row is None or owner_id != user.id:
+    if row is None or not can_manage(user, work_owner(kind, row, db)):
         raise HTTPException(404, "Work not found")
     return row
+
+
+def work_owner(kind, row, db):
+    if kind in WORK_MODELS:
+        return row.owner_id
+    details = db.get(ChallengeDetails, row.id)
+    return details.owner_id if details else None
 
 
 @app.patch("/api/work/{kind}/{id}")
@@ -987,6 +1148,16 @@ def update_work(
     row = owned_work(kind, id, user, db)
     if len(data.title.strip()) < 3:
         raise HTTPException(422, "Title must contain at least three characters")
+    owner_id = work_owner(kind, row, db)
+    if owner_id != user.id:
+        record(
+            db,
+            user,
+            "content.update",
+            AUDIT_KINDS[kind],
+            id,
+            {"title": data.title.strip(), "owner_id": owner_id},
+        )
     row.title = data.title.strip()
     row.description = data.description
     db.commit()
@@ -1000,9 +1171,36 @@ async def delete_work(
     user: User = Depends(current_user),
     db: DBSession = Depends(get_db),
 ):
-    async with user_lock(user.id):
+    await remove_work(kind, id, user, db)
+    return Response(status_code=204)
+
+
+async def remove_work(kind, id, user, db, moderated=False):
+    """Delete work with its dependent records; commits together with the audit entry."""
+    owner_id = work_owner(kind, owned_work(kind, id, user, db), db)
+    # Cleanup jobs run in the owner's workspace, even when an administrator deletes.
+    cleanup_owner = owner_id if owner_id is not None else user.id
+    async with user_lock(cleanup_owner):
         row = owned_work(kind, id, user, db)
         db.refresh(row, with_for_update=True)
+        if kind in ("competitions", "benchmarks"):
+            record(
+                db,
+                user,
+                "competition.delete",
+                AUDIT_KINDS[kind],
+                id,
+                {"title": row.title, "owner_id": owner_id},
+            )
+        elif moderated or owner_id != user.id:
+            record(
+                db,
+                user,
+                "content.delete",
+                AUDIT_KINDS[kind],
+                id,
+                {"title": row.title, "owner_id": owner_id},
+            )
         task = None
         if kind == "benchmark-collections":
             from .models import BenchmarkRun
@@ -1018,7 +1216,9 @@ async def delete_work(
                 ):
                     db.add(
                         WorkFileDeletion(
-                            owner_id=user.id, kind="benchmark-run", path=directory.name
+                            owner_id=cleanup_owner,
+                            kind="benchmark-run",
+                            path=directory.name,
                         )
                     )
                 db.delete(job)
@@ -1048,7 +1248,7 @@ async def delete_work(
                 )
             )
         if kind in ("datasets", "models"):
-            delete_artifacts(db, kind, id, user.id)
+            delete_artifacts(db, kind, id, cleanup_owner)
         if kind == "datasets":
             db.execute(delete(DatasetShare).where(DatasetShare.dataset_id == id))
             db.execute(delete(DatasetAccess).where(DatasetAccess.dataset_id == id))
@@ -1059,7 +1259,7 @@ async def delete_work(
                 .values(source_dataset_id=None)
             )
             task = WorkFileDeletion(
-                owner_id=user.id, kind="upload", path=row.storage_key
+                owner_id=cleanup_owner, kind="upload", path=row.storage_key
             )
             db.add(task)
         elif kind == "notebooks":
@@ -1095,7 +1295,9 @@ async def delete_work(
                 .distinct()
             ):
                 db.add(
-                    WorkFileDeletion(owner_id=user.id, kind="notebook-output", path=key)
+                    WorkFileDeletion(
+                        owner_id=cleanup_owner, kind="notebook-output", path=key
+                    )
                 )
             db.execute(delete(NotebookOutput).where(NotebookOutput.notebook_id == id))
 
@@ -1141,7 +1343,9 @@ async def delete_work(
                 draft.notebook_id = None
             db.flush()
             task = WorkFileDeletion(
-                owner_id=user.id, kind="notebook", path=f"arena-notebook-{id}.ipynb"
+                owner_id=cleanup_owner,
+                kind="notebook",
+                path=f"arena-notebook-{id}.ipynb",
             )
             db.add(task)
         elif kind in ("competitions", "benchmarks"):
@@ -1238,7 +1442,6 @@ async def delete_work(
                 await remove_work_file(task, db)
             except OSError:
                 db.rollback()  # The durable cleanup job remains for retry.
-    return Response(status_code=204)
 
 
 @app.get("/api/active-events")

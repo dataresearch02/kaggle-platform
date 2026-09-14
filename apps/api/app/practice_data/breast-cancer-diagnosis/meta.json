@@ -1,0 +1,14 @@
+{
+  "slug": "breast-cancer-diagnosis",
+  "title": "Breast cancer diagnosis",
+  "subtitle": "Classify tumours as malignant or benign from cell nucleus measurements",
+  "metric": "accuracy",
+  "task": "binary classification",
+  "target": "malignant",
+  "about": "30 measurements computed from digitized images of fine needle aspirates of breast masses. `malignant` is 1 for malignant and 0 for benign.",
+  "license": "CC BY 4.0",
+  "source": "UCI Machine Learning Repository: Breast Cancer Wisconsin (Diagnostic), W. Wolberg, O. Mangasarian, N. Street, W. Street (1995). Distributed with scikit-learn.",
+  "train_rows": 398,
+  "test_rows": 171,
+  "public_rows": 77
+}

@@ -1,0 +1,14 @@
+{
+  "slug": "diabetes-progression",
+  "title": "Diabetes progression",
+  "subtitle": "Predict disease progression one year after baseline",
+  "metric": "rmse",
+  "task": "regression",
+  "target": "progression",
+  "about": "Ten baseline variables (age, sex, BMI, blood pressure and six serum measurements, mean-centred and scaled) for 442 patients. `progression` is a quantitative measure one year later.",
+  "license": "BSD-3-Clause (scikit-learn)",
+  "source": "B. Efron, T. Hastie, I. Johnstone, R. Tibshirani, Least Angle Regression, Annals of Statistics (2004). Distributed with scikit-learn.",
+  "train_rows": 309,
+  "test_rows": 133,
+  "public_rows": 64
+}

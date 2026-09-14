@@ -10,6 +10,8 @@ docker compose exec -T api python -m app.import_samples
 
 If the web proxy retains the old API container address, recreate the web service with `docker compose up -d --no-deps --force-recreate web`.
 
+Separately, four offline practice competitions built from scikit-learn datasets are imported automatically at startup (see [administration](administration.md#offline-practice-competitions)).
+
 The importer creates four datasets (two original CSVs and two training splits), two local practice competitions, four runnable notebooks, four competition discussion prompts and two global discussion topics. They appear under a dedicated `examples_<random suffix>` curator account with an unshared random password. Your account and existing content are preserved. Sign in with your own account to join, execute code, submit predictions and discuss results.
 
 These are **local practice competitions and original Arena code/discussion prompts**, not imported official Kaggle competitions, notebooks or community posts. No Kaggle account, credentials or competition rules acceptance is required. No participants, scores or comments are fabricated.

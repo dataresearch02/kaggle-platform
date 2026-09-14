@@ -2,8 +2,17 @@ import Engagement from './Engagement';
 import { useEffect, useState } from 'react';
 import { api, type User } from './api';
 import Markdown from './Markdown';
+import ModerationActions, { HiddenNotice } from './Moderation';
 
-type Comment = { id: number; owner_id: number; username: string; body: string; created_at: string };
+type Comment = {
+  id: number;
+  owner_id: number;
+  username: string;
+  body: string;
+  created_at: string;
+  hidden?: boolean;
+  hidden_reason?: string;
+};
 export default function CodeComments({
   id,
   user,
@@ -95,7 +104,28 @@ export default function CodeComments({
           <p>
             <strong>{row.username}</strong> · {new Date(row.created_at).toLocaleString()}
           </p>
+          <HiddenNotice hidden={row.hidden} reason={row.hidden_reason} />
           <Markdown>{row.body}</Markdown>
+          <ModerationActions
+            kind="notebook-comment"
+            id={row.id}
+            ownerId={row.owner_id}
+            hidden={row.hidden}
+            user={user}
+            signIn={signIn}
+            label={`comment by ${row.username}`}
+            onChange={(change) =>
+              setRows((values) =>
+                change.deleted
+                  ? values.filter((item) => item.id !== row.id)
+                  : values.map((item) =>
+                      item.id === row.id
+                        ? { ...item, hidden: change.hidden, hidden_reason: change.reason }
+                        : item,
+                    ),
+              )
+            }
+          />
           <Engagement kind="notebook-comment" id={row.id} user={user} signIn={signIn} />
           {user?.id === row.owner_id && (
             <button

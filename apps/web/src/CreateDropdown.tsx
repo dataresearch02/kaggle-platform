@@ -21,9 +21,11 @@ const options = [
 export default function CreateDropdown({
   onSelect,
   disabled = false,
+  hidden = [],
 }: {
   onSelect: (id: string) => void;
   disabled?: boolean;
+  hidden?: string[];
 }) {
   const menuId = useId();
   const menu = useRef<HTMLDivElement>(null);
@@ -122,7 +124,9 @@ export default function CreateDropdown({
         onToggle={(event) => setOpen((event.nativeEvent as ToggleEvent).newState === 'open')}
       >
         <div className="create-menu-label">CREATE SOMETHING NEW</div>
-        {options.map(({ id, title, hint, icon: Icon }) => (
+        {options
+          .filter((option) => !hidden.includes(option.id))
+          .map(({ id, title, hint, icon: Icon }) => (
           <button
             key={id}
             role="menuitem"

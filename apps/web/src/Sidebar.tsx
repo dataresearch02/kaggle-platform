@@ -15,6 +15,7 @@ type Props = {
   signedIn: boolean;
   hasWork: boolean;
   disabled?: boolean;
+  canCreateCompetitions?: boolean;
   className?: string;
   navigate: (page: Page) => void;
   create: (page: Page) => void;
@@ -30,6 +31,7 @@ export default function Sidebar({
   signedIn,
   hasWork,
   disabled = false,
+  canCreateCompetitions = true,
   className = '',
   navigate,
   create,
@@ -85,7 +87,11 @@ export default function Sidebar({
           </span>
         </button>
       </div>
-      <CreateDropdown disabled={disabled} onSelect={(target) => create(target as Page)} />
+      <CreateDropdown
+        disabled={disabled}
+        hidden={canCreateCompetitions ? [] : ['competitions']}
+        onSelect={(target) => create(target as Page)}
+      />
       <nav aria-label="Main navigation">
         {nav
           .filter((item) => ['home', 'competitions', 'benchmarks'].includes(item.id))

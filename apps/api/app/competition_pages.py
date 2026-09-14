@@ -3,12 +3,15 @@
 import csv
 import io
 from typing import Literal
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .notebook_visibility import published_code, visible_notebooks
 from .auth import current_user
+from .code_pages import optional_user
+from .pagination import Page, count, page, set_total, window
+from .permissions import not_hidden
 from .db import get_db
 from .models import (
     Competition,
@@ -58,12 +61,11 @@ def data_preview(
     from .competition_metadata import require_data_access
 
     require_data_access(db, id, user)
-    details = db.get(ChallengeDetails, id)
-    content = (
-        details.test_csv
-        if details
-        else "id,temperature,working_day\n7,20,1\n8,10,1\n9,23,0\n"
-    )
+    from .competition_metadata import test_csv
+
+    content = test_csv(db, id)
+    if content is None:
+        raise HTTPException(404, "Test data is not available for this competition")
     reader = csv.DictReader(io.StringIO(content))
     rows = []
     count = 0
@@ -91,7 +93,11 @@ def resources(
         .where(
             CompetitionResource.competition_id == id,
             CompetitionResource.kind == kind,
-            visible_notebooks(None) if kind == "notebooks" else True,
+            (
+                visible_notebooks(None)
+                if kind == "notebooks"
+                else not_hidden(ModelCard, None)
+            ),
         )
         .order_by(model.id.desc())
         .limit(100)
@@ -150,15 +156,22 @@ class PostInput(BaseModel):
 
 
 @router.get("/{id}/discussion")
-def posts(id: int, db: Session = Depends(get_db)):
+def posts(
+    id: int,
+    response: Response,
+    pagination: Page = Depends(page),
+    user=Depends(optional_user),
+    db: Session = Depends(get_db),
+):
     require_competition(db, id)
+    query = select(CompetitionPost).where(
+        CompetitionPost.competition_id == id, not_hidden(CompetitionPost, user)
+    )
+    set_total(response, count(db, query))
     return [
         {**serialize(row), "owner": db.get(User, row.owner_id).username}
         for row in db.scalars(
-            select(CompetitionPost)
-            .where(CompetitionPost.competition_id == id)
-            .order_by(CompetitionPost.id.desc())
-            .limit(100)
+            window(query.order_by(CompetitionPost.id.desc()), pagination)
         )
     ]
 

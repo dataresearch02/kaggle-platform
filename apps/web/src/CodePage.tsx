@@ -6,6 +6,7 @@ import { python } from '@codemirror/lang-python';
 import Markdown from './Markdown';
 import { ArrowLeft, GitFork, Bookmark, Database, FileOutput, Code2 } from 'lucide-react';
 import { api, type User } from './api';
+import ModerationActions, { HiddenNotice } from './Moderation';
 import NotebookWorkspace, { CellOutput, text, type Document } from './NotebookWorkspace';
 
 const viewTabs = ['Notebook', 'Input', 'Output', 'Logs', 'Comments'] as const;
@@ -17,6 +18,8 @@ type CodeDetail = {
   description: string;
   owner: string;
   owner_id: number;
+  hidden?: boolean;
+  hidden_reason?: string;
   working_competition_id?: number | null;
   private?: boolean;
   allow_comments?: boolean;
@@ -244,6 +247,22 @@ export default function CodePage({
           )}
         </div>
       </header>
+      <HiddenNotice hidden={data.hidden} reason={data.hidden_reason} />
+      <ModerationActions
+        kind="code"
+        id={id}
+        ownerId={data.owner_id}
+        hidden={data.hidden}
+        user={user}
+        signIn={signIn}
+        label="code"
+        onChange={(change) => {
+          if (change.deleted) {
+            changed();
+            location.hash = 'notebooks';
+          } else setData({ ...data, hidden: change.hidden, hidden_reason: change.reason });
+        }}
+      />
       {error && (
         <p className="error" role="alert">
           {error}

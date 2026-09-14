@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Plus, Download, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Plus, Download } from 'lucide-react';
 import { api, type Item, type User } from './api';
 import Markdown from './Markdown';
+import ModerationActions, { HiddenNotice } from './Moderation';
 import DatasetMetadata from './DatasetMetadata';
 import ArtifactFiles from './ArtifactFiles';
 import ProfilePhoto from './ProfilePhoto';
@@ -84,10 +85,24 @@ export default function ResourcePage({
               </button>
             </div>
           </header>
+          <HiddenNotice hidden={item.hidden} reason={item.hidden_reason} />
+          <ModerationActions
+            kind={kind === 'datasets' ? 'dataset' : 'model'}
+            id={id}
+            ownerId={item.owner_id}
+            hidden={item.hidden}
+            user={user}
+            signIn={signIn}
+            label={kind === 'datasets' ? 'dataset' : 'model'}
+            onChange={(change) => {
+              if (change.deleted) location.hash = kind;
+              else setItem({ ...item, hidden: change.hidden, hidden_reason: change.reason });
+            }}
+          />
           {item.input_available === false && (
             <p>
-              This model is an external reference. Hosted model files are needed to attach it to a
-              notebook.
+              This model is only an external reference so far. Hosted model files are needed to
+              attach it to a notebook.
             </p>
           )}
           <Markdown>{item.description || ''}</Markdown>
@@ -137,9 +152,12 @@ export default function ResourcePage({
                 }
               />
               {item.url && (
-                <a className="button secondary" href={item.url} target="_blank" rel="noreferrer">
-                  <ExternalLink size={17} /> Model reference
-                </a>
+                <p className="external-reference">
+                  External reference (not available offline):{' '}
+                  <a href={item.url} target="_blank" rel="noreferrer noopener">
+                    {item.url}
+                  </a>
+                </p>
               )}
             </>
           )}

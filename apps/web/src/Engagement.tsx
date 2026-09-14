@@ -3,9 +3,18 @@ import { api, type User } from './api';
 import Markdown from './Markdown';
 import DiscussionEditor from './DiscussionEditor';
 import DiscussionAvatar from './DiscussionAvatar';
+import ModerationActions, { HiddenNotice } from './Moderation';
 
 type Reaction = { reaction: string; count: number; reacted: boolean };
-type Reply = { id: number; owner_id: number; username: string; body: string; created_at: string };
+type Reply = {
+  id: number;
+  owner_id: number;
+  username: string;
+  body: string;
+  created_at: string;
+  hidden?: boolean;
+  hidden_reason?: string;
+};
 type Thread = { reactions: Reaction[]; replies: Reply[]; next_cursor: number | null };
 const labels: Record<string, string> = {
   like: '👍 Like',
@@ -172,7 +181,32 @@ export default function Engagement({
                 {competitionId && <DiscussionAvatar username={reply.username} />}
                 <strong>{reply.username}</strong> · {new Date(reply.created_at).toLocaleString()}
               </p>
+              <HiddenNotice hidden={reply.hidden} reason={reply.hidden_reason} />
               <Markdown>{reply.body}</Markdown>
+              <ModerationActions
+                kind="reply"
+                id={reply.id}
+                ownerId={reply.owner_id}
+                hidden={reply.hidden}
+                user={user}
+                signIn={signIn}
+                label={`reply by ${reply.username}`}
+                onChange={(change) =>
+                  setThread(
+                    (value) =>
+                      value && {
+                        ...value,
+                        replies: change.deleted
+                          ? value.replies.filter((item) => item.id !== reply.id)
+                          : value.replies.map((item) =>
+                              item.id === reply.id
+                                ? { ...item, hidden: change.hidden, hidden_reason: change.reason }
+                                : item,
+                            ),
+                      },
+                  )
+                }
+              />
               {user?.id === reply.owner_id && (
                 <button
                   type="button"

@@ -22,7 +22,7 @@ Passwords are salted and hashed using scrypt. Session tokens are random, stored 
 
 Scoring accepts at most 1 MB of CSV, validates headers and exact ID membership, rejects duplicates and non-finite or extreme values, and calculates RMSE server-side. The leaderboard groups submissions by participant and uses their minimum score, with username as a stable secondary ordering. There is one synthetic starter competition; its test-feature endpoint is deliberately specific to that challenge. An organizer-facing competition pipeline must store test artifacts and versioned solutions before adding arbitrary competitions.
 
-SQLite supports simple local startup; PostgreSQL is the Compose default. PostgreSQL uses `data/postgres`; dataset files use `data/platform`, separate from database records. Hub metadata and its cookie secret use `data/hub`. The offline backup command covers the entire data tree and local credentials; see [storage operations](storage.md). Database migrations will replace `create_all` before the first schema-changing deployment. Seed initialization assumes one API process during boot.
+SQLite supports simple local startup; PostgreSQL is the Compose default. PostgreSQL uses `data/postgres`; dataset files use `data/platform`, separate from database records. Hub metadata and its cookie secret use `data/hub`. The offline backup command covers the entire data tree and local credentials; see [storage operations](storage.md). `create_all` creates new tables; `app/migrations.py` then applies ordered, idempotent column migrations recorded in `schema_migrations` (see [administration](administration.md)). Seed initialization assumes one API process during boot.
 
 ## Reused container images
 

@@ -5,6 +5,9 @@ from .models import User, Dataset, Competition, Notebook, Course, Discussion, Mo
 from .auth import hash_password
 import secrets
 
+SEED_COMPETITION = "Predict bike demand"
+SEED_TEST_CSV = "id,temperature,working_day\n7,20,1\n8,10,1\n9,23,0\n"
+
 
 def seed(db):
     if db.scalar(select(User).where(User.username == "arena")):
@@ -52,7 +55,7 @@ def seed(db):
         )
     db.add(
         Competition(
-            title="Predict bike demand",
+            title=SEED_COMPETITION,
             description="Build your first regression model using the City bikes dataset. Predict rental demand for IDs 7, 8 and 9. Download the test features and sample submission, then upload your predictions. This educational challenge uses synthetic data and a single leaderboard; lower RMSE is better.",
             category="Getting Started",
             metric="RMSE",

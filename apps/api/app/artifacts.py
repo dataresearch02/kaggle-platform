@@ -15,6 +15,7 @@ from .code_pages import optional_user
 from .dataset_access import readable
 from .db import DATA_DIR, get_db
 from .models import ArtifactVersion, Dataset, ModelCard, WorkFileDeletion
+from .permissions import can_manage, can_view
 
 router = APIRouter(prefix="/api/assets", tags=["Artifact files"])
 Kind = Literal["datasets", "models"]
@@ -25,13 +26,13 @@ def resource(db, kind, id, user, write=False):
     model = Dataset if kind == "datasets" else ModelCard
     if write:
         row = db.scalar(select(model).where(model.id == id).with_for_update())
-        if not row or row.owner_id != user.id:
+        if not row or not can_manage(user, row.owner_id):
             raise HTTPException(404, "Your resource was not found")
         return row
     if kind == "datasets":
         return readable(db, id, user)
     row = db.get(model, id)
-    if not row:
+    if not row or not can_view(row, user):
         raise HTTPException(404, "Model not found")
     return row
 

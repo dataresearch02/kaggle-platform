@@ -29,12 +29,17 @@ import {
   Trophy,
   X,
 } from 'lucide-react';
-import { api, type Item, type User } from './api';
+import { api, apiPage, type Item, type Site, type User } from './api';
+import AdminPage, { adminRouteFromHash } from './AdminPage';
+import Markdown from './Markdown';
 import NotebookWorkspace from './NotebookWorkspace';
 import CreatePage from './CreatePage';
 import NewNotebook from './NewNotebook';
 import CompetitionPage, { competitionTabs, type CompetitionTab } from './CompetitionPage';
 import YourWork, { type WorkItem, type WorkKind } from './YourWork';
+
+const PAGE_SIZE = 24;
+const ANNOUNCEMENT_KEY = 'arena-announcement-dismissed';
 
 const intros: Record<Page, [string, string]> = {
   work: ['Your work', 'Manage the content you create.'],
@@ -147,6 +152,19 @@ function workRouteFromHash(): WorkKind | 'all' | null {
 export default function App() {
   const [resourceRoute, setResourceRoute] = useState(resourceRouteFromHash);
   const [accountRoute, setAccountRoute] = useState(accountRouteFromHash);
+  const [adminRoute, setAdminRoute] = useState(adminRouteFromHash);
+  const [site, setSite] = useState<Site>({
+    registration_open: true,
+    local_login_enabled: true,
+    announcement: '',
+  });
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(ANNOUNCEMENT_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
   const [accountRevision, setAccountRevision] = useState(0);
   const [page, setPage] = useState<Page>(() => {
     const p =
@@ -169,6 +187,8 @@ export default function App() {
   const [competitionRoute, setCompetitionRoute] = useState(competitionRouteFromHash);
   const [user, setUser] = useState<User | null>(null);
   const [items, setItems] = useState<Item[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [featured, setFeatured] = useState<Item[]>([]);
   const [stats, setStats] = useState<Record<string, number>>({});
   const [query, setQuery] = useState('');
@@ -236,8 +256,22 @@ export default function App() {
     api<User>('/auth/me')
       .then(setUser)
       .catch(() => {});
+    api<Site>('/site')
+      .then(setSite)
+      .catch(() => {});
     const handler = () => {
       setResourceRoute(resourceRouteFromHash());
+      const admin = adminRouteFromHash();
+      setAdminRoute(admin);
+      if (admin) {
+        setAccountRoute(null);
+        setCodeRoute(null);
+        setCompetitionRoute(null);
+        setSelected(null);
+        setCreating(false);
+        setMobile(false);
+        return;
+      }
       const workRoute = workRouteFromHash();
       if (workRoute) setWorkFilter(workRoute);
       const account = accountRouteFromHash();
@@ -308,15 +342,8 @@ export default function App() {
     setItems([]);
     const timer = setTimeout(
       () => {
-        const target = page === 'home' ? 'competitions' : page;
-        const parameters = new URLSearchParams({ q: query });
-        if (page === 'competitions') {
-          parameters.set('status', competitionStatus);
-          parameters.set('category', competitionCategory);
-          parameters.set('sort', competitionSort);
-        }
         Promise.all([
-          api<Item[]>(`/${target}?${parameters}`),
+          apiPage<Item>(listPath(0)),
           api<Record<string, number>>('/stats'),
           page === 'home' ? api<Item[]>('/datasets') : Promise.resolve(undefined),
           page === 'competitions'
@@ -325,7 +352,8 @@ export default function App() {
         ])
           .then(([list, counts, datasets, filters]) => {
             if (active) {
-              setItems(list as Item[]);
+              setItems(list.items);
+              setTotal(list.total);
               setStats(counts as Record<string, number>);
               if (datasets) setFeatured(datasets as Item[]);
               if (filters) setCompetitionCategories(filters.categories);
@@ -362,19 +390,50 @@ export default function App() {
     }
   }, [notice]);
 
+  function listPath(offset: number) {
+    const target = page === 'home' ? 'competitions' : page;
+    const parameters = new URLSearchParams({
+      q: query,
+      offset: String(offset),
+      limit: String(PAGE_SIZE),
+    });
+    if (page === 'competitions') {
+      parameters.set('status', competitionStatus);
+      parameters.set('category', competitionCategory);
+      parameters.set('sort', competitionSort);
+    }
+    return `/${target}?${parameters}`;
+  }
+  async function loadMore() {
+    setLoadingMore(true);
+    try {
+      const next = await apiPage<Item>(listPath(items.length));
+      setItems((old) => [...old, ...next.items.filter((row) => !old.some((item) => item.id === row.id))]);
+      setTotal(next.total);
+    } catch (e) {
+      setNotice((e as Error).message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+  const mayCreateCompetitions = !user || user.can_create_competitions !== false;
   function createWork(target: Page) {
+    if (target === 'competitions' && !mayCreateCompetitions) {
+      setNotice('Only hosts and administrators can create competitions on this site.');
+      return;
+    }
     go(target);
     if (user) setCreating(true);
     else {
       setPendingCreate(true);
-      setAuth('register');
+      setAuth(site.registration_open ? 'register' : 'login');
     }
   }
   useEffect(() => {
     const handler = (event: Event) => createWork((event as CustomEvent<Page>).detail);
     window.addEventListener('arena-create', handler);
     return () => window.removeEventListener('arena-create', handler);
-  }, [user]);
+  }, [user, site.registration_open]);
 
   function openWork(kind: WorkKind) {
     go('work', `work/${kind}`);
@@ -383,6 +442,7 @@ export default function App() {
   function go(next: Page, fragment: string = next) {
     setResourceRoute(null);
     setAccountRoute(null);
+    setAdminRoute(null);
     setCodeRoute(null);
     setCompetitionRoute(null);
     setCompetitionStatus('all');
@@ -399,7 +459,7 @@ export default function App() {
   }
   function requireAuth(action: () => void) {
     if (user) action();
-    else setAuth('register');
+    else setAuth(site.registration_open ? 'register' : 'login');
   }
   function changed(message: string) {
     setRevision((v) => v + 1);
@@ -437,6 +497,7 @@ export default function App() {
         setMoreOpen={setMoreOpen}
         signedIn={!!user}
         hasWork={hasWork}
+        canCreateCompetitions={mayCreateCompetitions}
         className={mobile ? 'visible' : ''}
         navigate={(target) => {
           if (target === 'work') setWorkFilter('all');
@@ -458,7 +519,13 @@ export default function App() {
               {dataHubPages.includes(page) ? 'Data Hub' : 'Workspace'}
             </span>
             <ChevronRight size={14} />
-            <span>{accountRoute ? 'Your account' : nav.find((n) => n.id === page)?.label}</span>
+            <span>
+              {adminRoute
+                ? 'Administration'
+                : accountRoute
+                  ? 'Your account'
+                  : nav.find((n) => n.id === page)?.label}
+            </span>
           </div>
           <div className="account">
             {user ? (
@@ -469,6 +536,8 @@ export default function App() {
                   if (path === 'work') {
                     setWorkFilter('all');
                     go('work');
+                  } else if (path === 'admin') {
+                    location.hash = 'admin';
                   } else {
                     setAccountRoute(path);
                     setCodeRoute(null);
@@ -489,15 +558,38 @@ export default function App() {
                 <button className="text-button" onClick={() => setAuth('login')}>
                   Sign in
                 </button>
-                <button className="button small" onClick={() => setAuth('register')}>
-                  Join the community <ArrowRight size={15} />
-                </button>
+                {site.registration_open && (
+                  <button className="button small" onClick={() => setAuth('register')}>
+                    Join the community <ArrowRight size={15} />
+                  </button>
+                )}
               </>
             )}
           </div>
         </header>
+        {site.announcement && site.announcement !== dismissed && (
+          <div className="site-announcement" role="region" aria-label="Site announcement">
+            <Markdown>{site.announcement}</Markdown>
+            <button
+              className="icon-button"
+              aria-label="Dismiss announcement"
+              onClick={() => {
+                setDismissed(site.announcement);
+                try {
+                  localStorage.setItem(ANNOUNCEMENT_KEY, site.announcement);
+                } catch {
+                  // Storage can be unavailable; the banner stays dismissed until reload.
+                }
+              }}
+            >
+              <X size={16} />
+            </button>
+          </div>
+        )}
         <main>
-          {accountRoute ? (
+          {adminRoute ? (
+            <AdminPage tab={adminRoute} user={user} siteChanged={setSite} />
+          ) : accountRoute ? (
             <AccountPage
               key={`${accountRoute}-${user?.id}`}
               route={accountRoute}
@@ -614,11 +706,6 @@ export default function App() {
                         </button>
                       </div>
                       <div className="hero-caption">
-                        <span className="mini-avatars">
-                          <i>A</i>
-                          <i>M</i>
-                          <i>J</i>
-                        </span>
                         Built for everyone with a question.
                       </div>
                     </div>
@@ -701,7 +788,8 @@ export default function App() {
                       'benchmarks',
                       'models',
                       'discussions',
-                    ].includes(page) && (
+                    ].includes(page) &&
+                      (page !== 'competitions' || mayCreateCompetitions) && (
                       <button
                         className="button"
                         onClick={() => requireAuth(() => setCreating(true))}
@@ -742,7 +830,7 @@ export default function App() {
                       />
                     </label>
                     <span>
-                      {items.length} {items.length === 1 ? 'result' : 'results'}
+                      {total} {total === 1 ? 'result' : 'results'}
                     </span>
                   </div>
                   {page === 'competitions' && (
@@ -839,6 +927,20 @@ export default function App() {
                   ))}
                 </div>
               )}
+              {page !== 'home' && !loading && !error && items.length < total && (
+                <div className="load-more-row">
+                  <span className="muted">
+                    Showing {items.length} of {total}
+                  </span>
+                  <button
+                    className="button secondary"
+                    disabled={loadingMore}
+                    onClick={() => void loadMore()}
+                  >
+                    {loadingMore ? 'Loading…' : 'Load more'}
+                  </button>
+                </div>
+              )}
               {page === 'home' && (
                 <>
                   <SectionTitle
@@ -854,7 +956,9 @@ export default function App() {
                         item={item}
                         page="datasets"
                         index={index}
-                        onClick={() => go('datasets')}
+                        onClick={() => {
+                          location.hash = `datasets/${item.id}`;
+                        }}
                       />
                     ))}
                   </div>
@@ -910,7 +1014,9 @@ export default function App() {
       )}
       {auth && (
         <AuthModal
-          mode={auth}
+          mode={site.registration_open ? auth : 'login'}
+          canRegister={site.registration_open}
+          localLoginEnabled={site.local_login_enabled}
           toggle={() => setAuth(auth === 'login' ? 'register' : 'login')}
           close={() => {
             setAuth(null);
@@ -1046,11 +1152,15 @@ function Card({
 
 function AuthModal({
   mode,
+  canRegister,
+  localLoginEnabled,
   toggle,
   close,
   success,
 }: {
   mode: 'login' | 'register';
+  canRegister: boolean;
+  localLoginEnabled: boolean;
   toggle: () => void;
   close: () => void;
   success: (u: User) => void;
@@ -1078,6 +1188,11 @@ function AuthModal({
   return (
     <Modal title={mode === 'login' ? 'Welcome back' : 'Start your next discovery'} close={close}>
       <p className="muted">Create, learn, and share with your community.</p>
+      {mode === 'login' && !localLoginEnabled && (
+        <p className="auth-notice" role="note">
+          Username and password sign-in is currently limited to administrators.
+        </p>
+      )}
       <form onSubmit={submit}>
         <label>
           Username
@@ -1112,9 +1227,13 @@ function AuthModal({
           <ArrowRight size={16} />
         </button>
       </form>
-      <button className="text-button auth-toggle" onClick={toggle}>
-        {mode === 'login' ? 'New here? Create an account' : 'Already have an account? Sign in'}
-      </button>
+      {canRegister ? (
+        <button className="text-button auth-toggle" onClick={toggle}>
+          {mode === 'login' ? 'New here? Create an account' : 'Already have an account? Sign in'}
+        </button>
+      ) : (
+        <p className="auth-notice">Registration is currently closed.</p>
+      )}
     </Modal>
   );
 }
@@ -1238,12 +1357,16 @@ function Detail({
       {(page === 'competitions' || page === 'benchmarks') && (
         <>
           <div className="pill-row">
-            <span>{item.metric} · lower is better</span>
+            <span>
+              {item.metric} · {item.metric === 'Accuracy' ? 'higher' : 'lower'} is better
+            </span>
             <span>{item.participants} participants</span>
             <span>
               {page === 'benchmarks'
                 ? 'Ongoing benchmark'
-                : `Closes ${item.deadline?.slice(0, 10)}`}
+                : item.deadline
+                  ? `Closes ${item.deadline.slice(0, 10)}`
+                  : 'No deadline'}
             </span>
           </div>
           <div className="button-row">
@@ -1282,7 +1405,7 @@ function Detail({
                 });
                 setItem(await api(`/${page}/${item.id}`));
                 setSubmissions(await api(`/${page}/${item.id}/submissions`));
-                changed(`Submission scored: ${result.score.toFixed(4)} RMSE`);
+                changed(`Submission scored: ${result.score.toFixed(4)} ${item.metric}`);
               });
             }}
           >
@@ -1301,7 +1424,7 @@ function Detail({
                 <tr>
                   <th>Rank</th>
                   <th>Participant</th>
-                  <th>Best RMSE</th>
+                  <th>Best {item.metric}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1324,7 +1447,7 @@ function Detail({
                 <thead>
                   <tr>
                     <th>File</th>
-                    <th>RMSE</th>
+                    <th>{item.metric}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1492,9 +1615,12 @@ function Detail({
           </div>
           <ArtifactFiles kind="models" id={item.id} owner={!!user && item.owner_id === user.id} />
           {item.url && (
-            <a className="button" href={item.url} target="_blank" rel="noreferrer">
-              Visit model reference ↗
-            </a>
+            <p className="external-reference">
+              External reference (not available offline):{' '}
+              <a href={item.url} target="_blank" rel="noreferrer noopener">
+                {item.url}
+              </a>
+            </p>
           )}
         </>
       )}

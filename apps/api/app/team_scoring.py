@@ -41,7 +41,19 @@ def history_filter(db, competition_id, user):
     )
 
 
-def leaderboard(db, competition):
+def leaderboard_size(db, competition):
+    identity = func.coalesce(
+        SubmissionTeam.team_id, -Submission.user_id
+    )  # Team ids are positive; negated user ids cannot collide with them.
+    return db.scalar(
+        select(func.count(func.distinct(identity)))
+        .select_from(Submission)
+        .outerjoin(SubmissionTeam, SubmissionTeam.submission_id == Submission.id)
+        .where(Submission.competition_id == competition.id)
+    )
+
+
+def leaderboard(db, competition, offset=0, limit=100):
     from sqlalchemy import case
 
     score = (
@@ -64,11 +76,12 @@ def leaderboard(db, competition):
         .where(Submission.competition_id == competition.id)
         .group_by(kind, identity, SubmissionTeam.team_id, name)
         .order_by(score.desc() if competition.metric == "Accuracy" else score, name)
-        .limit(100)
+        .offset(offset)
+        .limit(limit)
     ).all()
     return [
         {
-            "rank": index + 1,
+            "rank": offset + index + 1,
             "username": (
                 f"{row.name} (Team #{row.team_id})" if row.team_id else row.name
             ),

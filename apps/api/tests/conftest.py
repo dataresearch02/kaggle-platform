@@ -3,6 +3,8 @@ import tempfile
 
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="arena-tests-")
 os.environ["DATABASE_URL"] = "sqlite://"
+# Practice packs are imported explicitly by test_practice_competitions.py.
+os.environ["ARENA_IMPORT_PRACTICE"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,6 +28,11 @@ def client():
         from app.competition_metadata import backfill_metadata
 
         backfill_metadata(db)
+        from app.models import SiteSetting
+
+        # Workflow tests predate the creation policy; policy tests set "hosts".
+        db.add(SiteSetting(key="competition_creation", value='"everyone"'))
+        db.commit()
 
     def override():
         with factory() as db:

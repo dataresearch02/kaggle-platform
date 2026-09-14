@@ -21,6 +21,10 @@ class User(Base):
     username = Column(String(40), unique=True, nullable=False)
     password_hash = Column(Text, nullable=False)
     created_at = Column(String, default=now)
+    role = Column(String(10), nullable=False, default="user", server_default="user")
+    status = Column(
+        String(12), nullable=False, default="active", server_default="active"
+    )
 
 
 class Session(Base):
@@ -42,6 +46,9 @@ class Dataset(Base):
     storage_key = Column(String(80), nullable=False)
     size = Column(Integer, default=0)
     created_at = Column(String, default=now)
+    # Moderation: hidden rows are visible only to their owner and administrators.
+    hidden = Column(Integer, nullable=False, default=0, server_default="0")
+    hidden_reason = Column(Text, nullable=False, default="", server_default="")
 
 
 class Competition(Base):
@@ -54,6 +61,8 @@ class Competition(Base):
     deadline = Column(String, nullable=False)
     solution = Column(Text, nullable=False)
     prize = Column(String(80), default="Knowledge")
+    # Private per-id answer metadata such as Public/Private leaderboard usage.
+    solution_usage = Column(Text, nullable=False, default="{}", server_default="{}")
 
 
 class Entry(Base):
@@ -82,6 +91,9 @@ class Notebook(Base):
     description = Column(Text, default="")
     code = Column(Text, nullable=False)
     created_at = Column(String, default=now)
+    # Moderation: hidden rows are visible only to their owner and administrators.
+    hidden = Column(Integer, nullable=False, default=0, server_default="0")
+    hidden_reason = Column(Text, nullable=False, default="", server_default="")
 
 
 class Course(Base):
@@ -130,6 +142,9 @@ class ModelCard(Base):
     license = Column(String(80), nullable=False)
     url = Column(Text, nullable=False)
     created_at = Column(String, default=now)
+    # Moderation: hidden rows are visible only to their owner and administrators.
+    hidden = Column(Integer, nullable=False, default=0, server_default="0")
+    hidden_reason = Column(Text, nullable=False, default="", server_default="")
 
 
 class ChallengeDetails(Base):
@@ -178,6 +193,9 @@ class CompetitionPost(Base):
     title = Column(String(160), nullable=False)
     body = Column(Text, nullable=False)
     created_at = Column(String, default=now)
+    # Moderation: hidden rows are visible only to their owner and administrators.
+    hidden = Column(Integer, nullable=False, default=0, server_default="0")
+    hidden_reason = Column(Text, nullable=False, default="", server_default="")
 
 
 class SampleImport(Base):
@@ -271,6 +289,9 @@ class NotebookComment(Base):
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     body = Column(Text, nullable=False)
     created_at = Column(String, default=now)
+    # Moderation: hidden rows are visible only to their owner and administrators.
+    hidden = Column(Integer, nullable=False, default=0, server_default="0")
+    hidden_reason = Column(Text, nullable=False, default="", server_default="")
 
 
 class ContentReply(Base):
@@ -281,6 +302,9 @@ class ContentReply(Base):
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     body = Column(Text, nullable=False)
     created_at = Column(String, default=now)
+    # Moderation: hidden rows are visible only to their owner and administrators.
+    hidden = Column(Integer, nullable=False, default=0, server_default="0")
+    hidden_reason = Column(Text, nullable=False, default="", server_default="")
 
 
 class ContentReaction(Base):
@@ -398,6 +422,9 @@ class UserProfile(Base):
     avatar = Column(Text, nullable=False, default="")
     avatar_type = Column(String(30), nullable=False, default="")
     visibility = Column(String(20), nullable=False, default="public")
+    # Moderation: hidden rows are visible only to their owner and administrators.
+    hidden = Column(Integer, nullable=False, default=0, server_default="0")
+    hidden_reason = Column(Text, nullable=False, default="", server_default="")
 
 
 class ApiToken(Base):
@@ -611,3 +638,44 @@ class NotebookDraftInput(Base):
         primary_key=True,
     )
     source = Column(Text, nullable=False)
+
+
+class SchemaMigration(Base):
+    """Applied additive schema migrations; see migrations.py."""
+
+    __tablename__ = "schema_migrations"
+    id = Column(String(80), primary_key=True)
+    applied_at = Column(String, default=now)
+
+
+class SiteSetting(Base):
+    __tablename__ = "site_settings"
+    key = Column(String(80), primary_key=True)
+    value = Column(Text, nullable=False)
+    updated_at = Column(String, default=now, onupdate=now)
+
+
+class ContentReport(Base):
+    __tablename__ = "content_reports"
+    id = Column(Integer, primary_key=True)
+    reporter_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    target_kind = Column(String(32), nullable=False)
+    target_id = Column(Integer, nullable=False)
+    reason = Column(Text, nullable=False)
+    status = Column(String(10), nullable=False, default="open", index=True)
+    resolution_note = Column(Text, nullable=False, default="")
+    resolved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(String, default=now)
+    resolved_at = Column(String, nullable=True)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+    id = Column(Integer, primary_key=True)
+    # Null for system actions such as bootstrap promotion and the admin CLI.
+    actor_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    action = Column(String(60), nullable=False, index=True)
+    target_kind = Column(String(40), nullable=False, default="")
+    target_id = Column(String(80), nullable=False, default="")
+    detail = Column(Text, nullable=False, default="{}")
+    created_at = Column(String, default=now)

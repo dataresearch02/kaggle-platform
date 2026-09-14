@@ -41,7 +41,9 @@ def get_visible(db, model, id, user, owner=False):
     row = db.scalar(select(model).where(model.id == id, visible(model, user)))
     if not row:
         raise HTTPException(404, "Resource not found")
-    if owner and (not user or row.owner_id != user.id):
+    from .permissions import can_manage
+
+    if owner and not can_manage(user, row.owner_id):
         raise HTTPException(403, "Only the owner can change this resource")
     return row
 
