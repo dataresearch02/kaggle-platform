@@ -4,8 +4,19 @@
 import hashlib
 import json
 import sys
+from pathlib import Path
 
 GPU_TOLERATIONS = [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}]
+
+# Keycloak realm the cluster already signs in with (oauth/cluster). Arena uses its
+# own confidential client; its secret lives in the optional Secret arena-oidc.
+OIDC = {
+    "ARENA_PUBLIC_URL": "https://%(hostname)s",
+    "ARENA_OIDC_ISSUER": "https://keycloak.ocp4.lab.local:9443/realms/ocp4",
+    "ARENA_OIDC_CLIENT_ID": "arena",
+    "ARENA_OIDC_CA_FILE": "/etc/arena/oidc/ca.crt",
+}
+KEYCLOAK_CA = Path(__file__).resolve().parent / "keycloak-ca.crt"
 
 # The image's config proxies to "api", but nginx resolves upstream names with its
 # own resolver, which ignores resolv.conf search domains. Use the service FQDN.
@@ -66,6 +77,20 @@ def main():
     config["POSTGRES_PORT"] = "5432"
     # The only GPU node (worker1) carries an nvidia.com/gpu NoSchedule taint.
     config["EVALUATION_TOLERATIONS"] = json.dumps(GPU_TOLERATIONS)
+    hostname = find(items, "Route", "arena")["spec"]["host"]
+    config.update({key: value % {"hostname": hostname} for key, value in OIDC.items()})
+
+    # Pods do not trust the lab CA that signs Keycloak's certificate.
+    api = find(items, "Deployment", "api")
+    api_pod = api["spec"]["template"]["spec"]
+    api_pod.setdefault("volumes", []).append(
+        {"name": "oidc-ca", "configMap": {"name": "arena-keycloak-ca"}}
+    )
+    api_container = api_pod["containers"][0]
+    api_container.setdefault("volumeMounts", []).append(
+        {"name": "oidc-ca", "mountPath": "/etc/arena/oidc", "readOnly": True}
+    )
+    api_container["envFrom"].append({"secretRef": {"name": "arena-oidc", "optional": True}})
 
     # KubeSpawner labels every user notebook pod app=jupyterhub, so selecting the
     # Hub by that label puts notebook pods behind the jupyterhub Service and lets
@@ -110,6 +135,15 @@ def main():
             "kind": "ConfigMap",
             "metadata": {"name": "arena-web-nginx", "namespace": namespace},
             "data": {"default.conf": site},
+        },
+    )
+    items.insert(
+        kinds.index("ConfigMap") + 1,
+        {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {"name": "arena-keycloak-ca", "namespace": namespace},
+            "data": {"ca.crt": KEYCLOAK_CA.read_text()},
         },
     )
 
