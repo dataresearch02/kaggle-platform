@@ -17,6 +17,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -236,20 +237,36 @@ def registry_has(image):
     )
 
 
-def test_api():
+def test_api(source=None, pytest_args=()):
     log("API tests (offline, arbitrary UID)")
     ensure_base("python")
     run(
         "podman", "run", "--rm", "--network", "none", "--security-opt", "label=disable",
         "--user", "123456:0", "-e", "HOME=/tmp", "-e", "PYTHONDONTWRITEBYTECODE=1",
-        # Mount the whole snapshot: some tests reach repository files such as scripts/.
-        "-v", f"{KIT / 'project'}:/repo:ro",
+        # Mount the whole tree: some tests reach repository files such as scripts/.
+        "-v", f"{source or KIT / 'project'}:/repo:ro",
         "-v", f"{KIT / 'python/api'}:/wheels:ro",
         "-w", "/repo/apps/api", "--entrypoint", "sh",
         base_record("python")["offline_tag"], "-ec",
         "pip install --quiet --disable-pip-version-check --no-index --find-links /wheels"
         " --target /tmp/deps -r requirements-dev.txt\n"
-        "PYTHONPATH=/tmp/deps python -m pytest -q -p no:cacheprovider tests",
+        "PYTHONPATH=/tmp/deps python -m pytest -q -p no:cacheprovider tests "
+        + " ".join(shlex.quote(arg) for arg in pytest_args),
+    )
+
+
+def build_web_check():
+    log("Web type-check and production build (offline)")
+    ensure_base("node")
+    run(
+        "podman", "run", "--rm", "--network", "none", "--security-opt", "label=disable",
+        "-v", f"{ROOT / 'apps/web'}:/src:ro",
+        "-v", f"{KIT / 'node/cache'}:/offline-cache:ro",
+        "--entrypoint", "sh", base_record("node")["offline_tag"], "-ec",
+        "mkdir /tmp/web && cd /src && tar --exclude=./node_modules --exclude=./dist -cf - . | tar -xf - -C /tmp/web\n"
+        "cp -a /offline-cache /tmp/npm-cache && cd /tmp/web\n"
+        "npm ci --offline --cache /tmp/npm-cache --no-audit --no-fund --loglevel=error\n"
+        "npm run build",
     )
 
 
@@ -583,6 +600,14 @@ def command_run(args):
     log(f"Release {record['id']} deployed")
 
 
+def command_check(args):
+    if args.only in (None, "api"):
+        test_api(ROOT, args.pytest_args)
+    if args.only in (None, "web"):
+        build_web_check()
+    log("Checks passed")
+
+
 def command_releases(args):
     current = current_release()
     for record in releases():
@@ -618,6 +643,11 @@ def main():
     run_parser.add_argument("--refresh-npm", action="store_true", help="re-download only the npm cache")
     run_parser.add_argument("--force", action="store_true", help="deploy even while evaluations run")
     run_parser.add_argument("--no-rollback", action="store_true", help="leave a failed release in place")
+    check_parser = commands.add_parser(
+        "check", help="offline API tests and web build against the working tree (no deploy)"
+    )
+    check_parser.add_argument("--only", choices=("api", "web"), help="run just one check")
+    check_parser.add_argument("pytest_args", nargs=argparse.REMAINDER, help="extra pytest arguments, e.g. -k teams")
     commands.add_parser("releases", help="list recorded releases")
     rollback_parser = commands.add_parser("rollback", help="redeploy an earlier release")
     rollback_parser.add_argument("--to", metavar="RELEASE", help="release id (default: the one before current)")
@@ -641,19 +671,23 @@ def main():
         print(f"Log: {log_path}")
         sys.exit(code)
 
+    handler = {
+        "plan": command_plan,
+        "run": command_run,
+        "check": command_check,
+        "releases": command_releases,
+        "rollback": command_rollback,
+    }[args.command]
     WORK.mkdir(parents=True, exist_ok=True)
     with (WORK / "pipeline.lock").open("w") as lock:
+        # Checks only run local containers and may overlap a deploy.
+        if args.command in ("run", "rollback"):
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                sys.exit("Another pipeline command is running")
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            sys.exit("Another pipeline command is running")
-        try:
-            {
-                "plan": command_plan,
-                "run": command_run,
-                "releases": command_releases,
-                "rollback": command_rollback,
-            }[args.command](args)
+            handler(args)
         except PipelineError as error:
             print(f"\nPIPELINE FAILED: {error}", file=sys.stderr, flush=True)
             sys.exit(1)

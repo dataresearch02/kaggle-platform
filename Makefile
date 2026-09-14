@@ -1,4 +1,4 @@
-.PHONY: up down test build format format-check storage-plan storage-init storage-migrate backup deploy deploy-plan deploy-releases deploy-rollback
+.PHONY: up down test build format format-check storage-plan storage-init storage-migrate backup check deploy deploy-plan deploy-releases deploy-rollback
 
 up:
 	python scripts/containers.py up --build
@@ -35,6 +35,9 @@ backup:
 	python scripts/storage.py backup
 
 # OpenShift (ocp4.lab.local): build changed images offline, push, roll out. See deploy/README.md.
+check:
+	python3 deploy/pipeline.py check $(ARGS)
+
 deploy-plan:
 	python3 deploy/pipeline.py plan
 

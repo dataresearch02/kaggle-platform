@@ -7,10 +7,14 @@ internet access; the cluster does not. Images go to the mirror Quay at
 ## Update the cluster
 
 ```bash
+make check               # offline API tests + web type-check/build on the working tree
 git commit -am "..."     # only committed sources are built
 make deploy-plan         # what would be built and which cluster objects change
 make deploy              # test, build, push, deploy, verify
 ```
+
+`make check` needs no commit and does not touch the cluster. Limit it with
+`make check ARGS="--only api -k teams"` or `ARGS="--only web"`.
 
 `make deploy` runs `pipeline.py run`:
 
