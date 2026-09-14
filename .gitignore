@@ -22,3 +22,10 @@ sources/node/
 sources/project/
 sources/manifests/
 sources/logs/
+
+# OpenShift pipeline state and output on the deployment host.
+deploy/.work/
+deploy/logs/
+deploy/releases/
+deploy/state/
+deploy/arena-openshift.json
