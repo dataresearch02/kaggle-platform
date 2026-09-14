@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ArrowUpRight, Search } from 'lucide-react';
-import { api, apiPage, type Site, type User } from './api';
+import { api, apiPage, formatBytes, type Site, type StorageUsage, type User } from './api';
 import Markdown from './Markdown';
 import type { Forum } from './Community';
 import {
@@ -18,6 +18,7 @@ export const adminTabs = [
   'community',
   'audit',
   'compute',
+  'storage',
   'settings',
 ] as const;
 export type AdminTab = (typeof adminTabs)[number];
@@ -28,6 +29,7 @@ const tabLabels: Record<AdminTab, string> = {
   community: 'Community',
   audit: 'Audit log',
   compute: 'Compute',
+  storage: 'Storage',
   settings: 'Settings',
 };
 
@@ -84,7 +86,18 @@ type Settings = Site & {
   max_schedules_per_user: number;
   gpu_weekly_hours: number;
   gpu_capacity: number;
+  storage_quota_gib: number;
 };
+type StorageRow = {
+  user_id: number;
+  username: string;
+  stored_bytes: number;
+  upload_bytes: number;
+  used_bytes: number;
+  quota_bytes: number;
+  custom_quota: boolean;
+};
+const GIB = 1024 ** 3;
 type ComputeReport = {
   capacity: number;
   in_use: number;
@@ -239,6 +252,7 @@ export default function AdminPage({
         {tab === 'community' && <CommunityTab />}
         {tab === 'audit' && <AuditTab />}
         {tab === 'compute' && <ComputeTab />}
+        {tab === 'storage' && <StorageTab />}
         {tab === 'settings' && <SettingsTab siteChanged={siteChanged} />}
       </div>
     </section>
@@ -937,6 +951,25 @@ function SettingsTab({ siteChanged }: { siteChanged: (site: PublicSettings) => v
         </label>
       </fieldset>
       <fieldset>
+        <legend>Storage</legend>
+        <label>
+          Default storage quota per user (GiB)
+          <input
+            type="number"
+            min={0}
+            max={1048576}
+            step={0.5}
+            required
+            value={settings.storage_quota_gib}
+            onChange={(event) => change({ storage_quota_gib: Number(event.target.value) })}
+          />
+          <small>
+            Dataset and model version files plus unfinished uploads. Override single users under
+            Storage.
+          </small>
+        </label>
+      </fieldset>
+      <fieldset>
         <legend>Announcement</legend>
         <label>
           Markdown shown to every visitor (leave empty for none)
@@ -967,6 +1000,153 @@ function SettingsTab({ siteChanged }: { siteChanged: (site: PublicSettings) => v
         {busy ? 'Saving…' : 'Save settings'}
       </button>
     </form>
+  );
+}
+
+function StorageTab() {
+  const [query, setQuery] = useState('');
+  const q = useDebounced(query);
+  const list = usePaged<StorageRow>(`/admin/storage?${new URLSearchParams({ q })}`);
+  const [quotas, setQuotas] = useState<Record<number, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
+  async function save(row: StorageRow, quota: number | null) {
+    setBusy(true);
+    list.setError('');
+    setNotice('');
+    try {
+      const usage = await api<StorageUsage>(`/admin/users/${row.user_id}/storage-quota`, {
+        method: 'PUT',
+        body: JSON.stringify({ quota_gib: quota }),
+      });
+      list.setItems((items) =>
+        items.map((item) =>
+          item.user_id === row.user_id
+            ? { ...item, quota_bytes: usage.quota_bytes, custom_quota: usage.custom_quota }
+            : item,
+        ),
+      );
+      setQuotas((old) => {
+        const next = { ...old };
+        delete next[row.user_id];
+        return next;
+      });
+      setNotice(
+        quota === null
+          ? `${row.username} now uses the default quota`
+          : `Set the storage quota of ${row.username} to ${quota} GiB`,
+      );
+    } catch (e) {
+      list.setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <p className="muted">
+        Dataset and model files per user, largest first. Files shared by several versions count
+        once; unfinished uploads count their received bytes. Set the default quota under Settings.
+        Overrides are recorded in the audit log.
+      </p>
+      <label className="search">
+        <Search size={18} />
+        <input
+          aria-label="Search users"
+          placeholder="Search users…"
+          value={query}
+          maxLength={40}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </label>
+      {list.error && (
+        <p className="error" role="alert">
+          {list.error}
+        </p>
+      )}
+      {notice && (
+        <p className="success" role="status">
+          {notice}
+        </p>
+      )}
+      <div className="table-scroll">
+        <table className="admin-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Used</th>
+              <th>Uploads in progress</th>
+              <th>Quota</th>
+              <th>Set quota (GiB)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.items.map((row) => (
+              <tr key={row.user_id}>
+                <td>
+                  <a href={`#profile/${row.username}`}>{row.username}</a>
+                </td>
+                <td>
+                  {formatBytes(row.used_bytes)}{' '}
+                  <small className="muted">
+                    ({row.quota_bytes ? Math.round((row.used_bytes / row.quota_bytes) * 100) : 100}
+                    %)
+                  </small>
+                </td>
+                <td>{formatBytes(row.upload_bytes)}</td>
+                <td>
+                  {formatBytes(row.quota_bytes)}{' '}
+                  {row.custom_quota && <span className="admin-badge">custom</span>}
+                </td>
+                <td>
+                  <form
+                    className="admin-row-actions"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const value = Number(quotas[row.user_id]);
+                      if (quotas[row.user_id] !== undefined && Number.isFinite(value) && value >= 0)
+                        void save(row, value);
+                    }}
+                  >
+                    <input
+                      type="number"
+                      min={0}
+                      max={1048576}
+                      step={0.5}
+                      aria-label={`Storage quota in GiB for ${row.username}`}
+                      value={quotas[row.user_id] ?? String(Number((row.quota_bytes / GIB).toFixed(2)))}
+                      onChange={(event) =>
+                        setQuotas((old) => ({ ...old, [row.user_id]: event.target.value }))
+                      }
+                    />
+                    <button className="text-button" disabled={busy}>
+                      Save
+                    </button>
+                    {row.custom_quota && (
+                      <button
+                        type="button"
+                        className="text-button"
+                        disabled={busy}
+                        onClick={() => void save(row, null)}
+                      >
+                        Use default
+                      </button>
+                    )}
+                  </form>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <ListFooter
+        shown={list.items.length}
+        total={list.total}
+        loading={list.loading}
+        more={() => void list.more()}
+        noun="users"
+      />
+    </>
   );
 }
 

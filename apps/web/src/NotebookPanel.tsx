@@ -12,7 +12,7 @@ import {
   Database,
   Table2,
 } from 'lucide-react';
-import { api, type ComputeUsage, type Item } from './api';
+import { api, type ComputeUsage, type Item, type VersionInfo } from './api';
 import GpuUsageMeter, { InternetOff } from './GpuUsageMeter';
 import { NotebookRuns, NotebookSchedules } from './NotebookRuns';
 
@@ -31,7 +31,63 @@ export type Input = {
   kind?: 'notebook-output' | 'dataset' | 'competition' | 'notebook' | 'model';
   files?: InputFile[];
   path?: string;
+  /** Datasets and models: the pinned version number, or null to follow the latest. */
+  version?: number | null;
+  resolved_version?: number;
+  variation_id?: number;
+  variation?: string;
+  file_count?: number;
+  /** False when the source was too large to copy into the interactive session. */
+  interactive?: boolean;
 };
+
+/** Switch a dataset or model input between a pinned version and the latest one. */
+function InputVersionPicker({
+  item,
+  disabled,
+  change,
+}: {
+  item: Input;
+  disabled: boolean;
+  change: (version: number | null) => void;
+}) {
+  const [versions, setVersions] = useState<VersionInfo[] | null>(null);
+  const scope =
+    item.kind === 'model'
+      ? `/models/${item.id}/variations/${item.variation_id}`
+      : `/datasets/${item.id}`;
+  const pinned = item.version ?? item.resolved_version;
+  function load() {
+    if (versions) return;
+    api<VersionInfo[]>(`${scope}/versions`)
+      .then((rows) => setVersions(rows.filter((row) => row.status === 'published')))
+      .catch(() => setVersions([]));
+  }
+  return (
+    <label className="notebook-input-version-picker">
+      Version
+      <select
+        disabled={disabled}
+        value={item.version === null ? 'latest' : String(pinned)}
+        onFocus={load}
+        onPointerDown={load}
+        onChange={(event) =>
+          change(event.target.value === 'latest' ? null : Number(event.target.value))
+        }
+      >
+        <option value="latest">Always latest</option>
+        {item.version !== null && !versions?.some((row) => row.number === pinned) && (
+          <option value={String(pinned)}>Version {pinned}</option>
+        )}
+        {(versions || []).map((row) => (
+          <option key={row.id} value={String(row.number)}>
+            Version {row.number}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
 export default function NotebookPanel({
   inputs,
   attach,
@@ -200,7 +256,7 @@ export default function NotebookPanel({
                           : 'Datasets'}
                   </h3>
                   {sources.map((item) => {
-                    const key = `${item.kind || 'dataset'}-${item.id}`;
+                    const key = `${item.kind || 'dataset'}-${item.id}-${item.variation_id || 0}`;
                     const expanded = !collapsedInputs.has(key);
                     const files = item.files || [
                       {
@@ -230,7 +286,15 @@ export default function NotebookPanel({
                             <span className={`notebook-input-source-icon ${kind}`}>
                               <Icon size={17} />
                             </span>
-                            <span className="notebook-input-source-title">{item.title}</span>
+                            <span className="notebook-input-source-title">
+                              {item.title}
+                              {item.variation ? ` · ${item.variation}` : ''}
+                            </span>
+                            {item.resolved_version !== undefined && (
+                              <span className="notebook-input-version">
+                                {item.version === null ? 'latest · ' : ''}v{item.resolved_version}
+                              </span>
+                            )}
                           </button>
                           <button
                             className="notebook-input-remove"
@@ -252,6 +316,37 @@ export default function NotebookPanel({
                             <X size={15} />
                           </button>
                         </div>
+                        {item.resolved_version !== undefined && expanded && (
+                          <InputVersionPicker
+                            item={item}
+                            disabled={busy || !ready}
+                            change={async (version) => {
+                              setBusy(true);
+                              setError('');
+                              try {
+                                await attach({ ...item, version });
+                              } catch (e) {
+                                setError((e as Error).message);
+                              } finally {
+                                setBusy(false);
+                              }
+                            }}
+                          />
+                        )}
+                        {item.interactive === false && expanded && (
+                          <p className="notebook-input-note">
+                            Too large to copy into this session (over 200 MB or 1,000 files). Save
+                            &amp; Run All and scheduled runs read it from {item.path}.
+                          </p>
+                        )}
+                        {item.file_count !== undefined &&
+                          item.files &&
+                          item.file_count > item.files.length &&
+                          expanded && (
+                            <p className="notebook-input-note">
+                              Showing {item.files.length} of {item.file_count} files.
+                            </p>
+                          )}
                         <ul
                           id={`input-files-${key}`}
                           className="notebook-input-files"

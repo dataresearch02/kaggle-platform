@@ -89,7 +89,83 @@ export type Item = {
   /** Upvotes on datasets and models, and whether the signed-in user voted. */
   votes?: number;
   voted?: boolean;
+  /** Datasets: newest published version, count and (for managers) the draft. */
+  latest_version?: VersionInfo | null;
+  version_count?: number;
+  draft_version?: VersionInfo | null;
+  /** Whether a published version with files can be attached to a notebook. */
+  input_available?: boolean;
+  input_path?: string;
+  /** Models: Markdown card and variations with their versions. */
+  card?: string;
+  variations?: ModelVariation[];
 };
+/** A numbered dataset or model version; drafts have no number until published. */
+export type VersionInfo = {
+  id: number;
+  number: number | null;
+  status: 'draft' | 'published';
+  note: string;
+  creator: string | null;
+  file_count: number;
+  total_size: number;
+  created_at: string;
+  published_at: string | null;
+};
+export type VersionFile = {
+  id: number;
+  path: string;
+  name: string;
+  size: number;
+  sha256: string;
+  type: string;
+  previewable: boolean;
+  created_at: string;
+};
+export type ModelVariation = {
+  id: number;
+  framework: string;
+  framework_label: string;
+  slug: string;
+  description: string;
+  created_at: string;
+  latest_version: VersionInfo | null;
+  version_count: number;
+  has_draft: boolean;
+  /** Folder the files are copied to in notebooks, and a loading snippet. */
+  input_path: string;
+  snippet: string;
+};
+export type StorageUsage = {
+  quota_bytes: number;
+  stored_bytes: number;
+  upload_bytes: number;
+  used_bytes: number;
+  reserved_bytes: number;
+  available_bytes: number;
+  custom_quota: boolean;
+};
+export const FRAMEWORKS = [
+  { value: 'pytorch', label: 'PyTorch' },
+  { value: 'tensorflow', label: 'TensorFlow / Keras' },
+  { value: 'jax', label: 'JAX' },
+  { value: 'scikit-learn', label: 'scikit-learn' },
+  { value: 'onnx', label: 'ONNX' },
+  { value: 'transformers', label: 'Transformers' },
+  { value: 'gguf', label: 'GGUF' },
+  { value: 'other', label: 'Other' },
+];
+export function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let size = value / 1024;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size.toFixed(size < 10 ? 1 : 0)} ${units[unit]}`;
+}
 export type MetricInfo = {
   name: string;
   label: string;

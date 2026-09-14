@@ -140,6 +140,9 @@ async def lifespan(app):
     )
     cleanup = asyncio.create_task(cleanup_drafts())
     work_cleanup = asyncio.create_task(cleanup_work_files())
+    from .uploads import cleanup_uploads
+
+    upload_cleanup = asyncio.create_task(cleanup_uploads())
     from .notebook_runtime import reconcile_gpu_sessions
 
     gpu_sessions = asyncio.create_task(reconcile_gpu_sessions())
@@ -153,6 +156,9 @@ async def lifespan(app):
             commits.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await commits
+        upload_cleanup.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await upload_cleanup
         work_cleanup.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await work_cleanup
@@ -223,8 +229,14 @@ from .progression import router as progression_router
 from .learn import router as learn_router
 from .notebook_runs import router as runs_router
 from .compute import router as compute_router
+from .resource_versions import router as versions_router
+from .uploads import router as uploads_router
+from .storage_quotas import router as storage_router
 
 for community_router in (
+    versions_router,
+    uploads_router,
+    storage_router,
     learn_router,
     runs_router,
     compute_router,
@@ -528,11 +540,12 @@ async def upload_dataset(
         raise HTTPException(
             422, "CSV needs unique, nonempty headers and consistently sized data rows"
         )
-    key = secrets.token_hex(16) + ".csv"
-    folder = DATA_DIR / "uploads"
-    folder.mkdir(exist_ok=True)
-    path = folder / key
-    path.write_bytes(content)
+    from .file_store import blob_path, fallback_path, store_bytes
+    from .storage_quotas import require_capacity
+
+    require_capacity(db, user.id, len(content))
+    key = store_bytes("uploads", content, ".csv")
+    path = blob_path("uploads", key)
     obj = Dataset(
         owner_id=user.id,
         title=title,
@@ -548,6 +561,27 @@ async def upload_dataset(
         db.flush()
         ensure_profile(db, obj)
         db.add(DatasetAccess(dataset_id=obj.id, visibility="private"))
+        from .models import StoredFile
+        from .resource_versions import publish_files
+
+        stored = StoredFile(
+            owner_id=user.id,
+            store="uploads",
+            storage_key=key,
+            size=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+        )
+        db.add(stored)
+        db.flush()
+        publish_files(
+            db,
+            "dataset",
+            obj,
+            0,
+            {fallback_path(obj.filename): stored.id},
+            "Initial version",
+            user,
+        )
         db.commit()
     except Exception:
         db.rollback()
@@ -562,27 +596,48 @@ def dataset_detail(
 ):
     from .votes import summary
 
+    from .file_store import primary_path
+    from .resource_versions import dataset_summary
+
     obj = readable_dataset(db, id, user)
-    with (DATA_DIR / "uploads" / obj.storage_key).open(
-        encoding="utf-8-sig", newline=""
-    ) as file:
-        reader = csv.DictReader(file)
-        preview = []
-        for row in reader:
-            preview.append(row)
-            if len(preview) == 10:
-                break
-    return {**public(obj, db), "preview": preview, **summary(db, "dataset", id, user)}
+    preview = []
+    # The legacy preview shows the latest version's primary CSV, if it has one.
+    source = primary_path(db, obj)
+    if source:
+        try:
+            with source.open(encoding="utf-8-sig", newline="") as file:
+                for row in csv.DictReader(file):
+                    preview.append(row)
+                    if len(preview) == 10:
+                        break
+        except (csv.Error, UnicodeError):
+            preview = []
+    return {
+        **public(obj, db),
+        "preview": preview,
+        **summary(db, "dataset", id, user),
+        **dataset_summary(db, obj, user),
+    }
 
 
 @app.get("/api/datasets/{id}/download")
 def download_dataset(
     id: int, user=Depends(optional_user), db: DBSession = Depends(get_db)
 ):
+    """The latest version's primary CSV; other files use the version file routes."""
+    from .file_store import download_name, primary_path
+
     obj = readable_dataset(db, id, user)
+    source = primary_path(db, obj)
+    if not source:
+        raise HTTPException(
+            404,
+            "The latest version of this dataset has no CSV file; download its files"
+            " from the Files tab",
+        )
     return FileResponse(
-        DATA_DIR / "uploads" / obj.storage_key,
-        filename=obj.filename,
+        source,
+        filename=download_name(obj.filename),
         media_type="text/csv",
     )
 
@@ -1122,21 +1177,23 @@ def models(
 @app.get("/api/models/{id}")
 def model_detail(id: int, user=Depends(optional_user), db: DBSession = Depends(get_db)):
     from .artifacts import resource
-    from .models import ArtifactVersion
+    from .models import ModelVariation
+    from .resource_versions import model_input_available, variation_json
     from .votes import summary
 
+    row = resource(db, "models", id, user)
     return {
-        **public(resource(db, "models", id, user), db),
+        **public(row, db),
         **summary(db, "model", id, user),
-        "input_available": bool(
-            db.scalar(
-                select(ArtifactVersion.id)
-                .where(
-                    ArtifactVersion.kind == "models", ArtifactVersion.resource_id == id
-                )
-                .limit(1)
+        "input_available": model_input_available(db, id),
+        "variations": [
+            variation_json(db, row, variation, user)
+            for variation in db.scalars(
+                select(ModelVariation)
+                .where(ModelVariation.model_id == id)
+                .order_by(ModelVariation.id)
             )
-        ),
+        ],
     }
 
 
@@ -1146,11 +1203,23 @@ def create_model(
     user: User = Depends(current_user),
     db: DBSession = Depends(get_db),
 ):
+    from .models import ModelVariation
+    from .resource_versions import card_template
+    from .version_backfill import framework_key
+
     obj = ModelCard(
         owner_id=user.id,
         **{**data.model_dump(), "url": str(data.url) if data.url else ""},
+        card=card_template(data.title, data.description, data.license),
     )
     db.add(obj)
+    db.flush()
+    # Files are uploaded as versions of a variation; start with a default one.
+    db.add(
+        ModelVariation(
+            model_id=obj.id, framework=framework_key(data.framework), slug="default"
+        )
+    )
     db.commit()
     return public(obj, db)
 
@@ -1361,7 +1430,14 @@ async def remove_work(kind, id, user, db, moderated=False):
                     NotebookDraftCompetition.competition_id == id
                 )
             )
+        scheduled = {}
         if kind in ("datasets", "models"):
+            from .resource_versions import delete_resource_versions
+
+            # Versions, drafts, uploads and stored files; frees the owner's quota.
+            scheduled = delete_resource_versions(
+                db, AUDIT_KINDS[kind], id, cleanup_owner
+            )
             delete_artifacts(db, kind, id, cleanup_owner)
         if kind == "datasets":
             db.execute(delete(DatasetShare).where(DatasetShare.dataset_id == id))
@@ -1372,10 +1448,15 @@ async def remove_work(kind, id, user, db, moderated=False):
                 .where(CompetitionDataFile.source_dataset_id == id)
                 .values(source_dataset_id=None)
             )
-            task = WorkFileDeletion(
-                owner_id=cleanup_owner, kind="upload", path=row.storage_key
+            # The primary CSV is normally already queued with the version files.
+            task = scheduled.get(("uploads", row.storage_key)) or scheduled.get(
+                ("artifacts", row.storage_key)
             )
-            db.add(task)
+            if not task and row.storage_key:
+                task = WorkFileDeletion(
+                    owner_id=cleanup_owner, kind="upload", path=row.storage_key
+                )
+                db.add(task)
         elif kind == "notebooks":
             db.execute(
                 update(NotebookWorkingCopy)

@@ -237,7 +237,14 @@ async def upload(
         )
         if not dataset or not can_manage(user, dataset.owner_id):
             raise HTTPException(403, "Choose a dataset you own")
-        content = (DATA_DIR / "uploads" / dataset.storage_key).read_bytes()
+        from .file_store import primary_path
+
+        source = primary_path(db, dataset)
+        if not source or source.stat().st_size > 10 * 1024 * 1024:
+            raise HTTPException(
+                422, "The dataset's latest version needs a CSV file of at most 10 MB"
+            )
+        content = source.read_bytes()
         license = dataset.license
         profile = ensure_profile(db, dataset)
         source_url = profile.source_url

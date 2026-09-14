@@ -323,8 +323,10 @@ async def open_notebook(
             )
             if not dataset:
                 continue
-            source = DATA_DIR / "uploads" / dataset.storage_key
-            if not source.is_file():
+            from .file_store import primary_path
+
+            source = primary_path(db, dataset)
+            if not source:
                 continue
             input_endpoint = f"/user/{name}/api/contents/arena-input-{dataset.id}.csv"
             found = await hub.request(

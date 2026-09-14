@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from sqlalchemy import (
+    BigInteger,
     Column,
     Integer,
     String,
@@ -49,8 +50,9 @@ class Dataset(Base):
     tags = Column(String(300), default="")
     license = Column(String(80), default="CC0-1.0")
     filename = Column(String(255), nullable=False)
+    # The latest version's primary CSV in uploads/; empty when that version has none.
     storage_key = Column(String(80), nullable=False)
-    size = Column(Integer, default=0)
+    size = Column(BigInteger, default=0)
     created_at = Column(String, default=now)
     # Moderation: hidden rows are visible only to their owner and administrators.
     hidden = Column(Integer, nullable=False, default=0, server_default="0")
@@ -317,6 +319,8 @@ class ModelCard(Base):
     # Moderation: hidden rows are visible only to their owner and administrators.
     hidden = Column(Integer, nullable=False, default=0, server_default="0")
     hidden_reason = Column(Text, nullable=False, default="", server_default="")
+    # Markdown model card; empty for models that predate cards (description is shown).
+    card = Column(Text, nullable=False, default="", server_default="")
 
 
 class ChallengeDetails(Base):
@@ -598,7 +602,7 @@ class ArtifactVersion(Base):
     resource_id = Column(Integer, nullable=False, index=True)
     path = Column(String(240), nullable=False)
     storage_key = Column(String(80), nullable=False, unique=True)
-    size = Column(Integer, nullable=False)
+    size = Column(BigInteger, nullable=False)
     sha256 = Column(String(64), nullable=False)
     created_at = Column(String, default=now)
 
@@ -1093,6 +1097,126 @@ class NotebookDraftExercise(Base):
         primary_key=True,
     )
     exercise_id = Column(Integer, ForeignKey("course_exercises.id"), nullable=False)
+
+
+class StoredFile(Base):
+    """One immutable stored blob, charged to its owner's storage quota once.
+
+    Versions that carry a file over reference the same row, so shared bytes count
+    once. `store` names the DATA_DIR folder: "uploads" (dataset files, including the
+    legacy primary CSV) or "artifacts" (model files and legacy supplemental files).
+    """
+
+    __tablename__ = "stored_files"
+    __table_args__ = (UniqueConstraint("store", "storage_key"),)
+    id = Column(Integer, primary_key=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    store = Column(String(20), nullable=False)
+    storage_key = Column(String(80), nullable=False)
+    size = Column(BigInteger, nullable=False)
+    sha256 = Column(String(64), nullable=False, default="")
+    created_at = Column(String, default=now)
+
+
+class ModelVariation(Base):
+    """A framework and variation (such as PyTorch "base") of a model."""
+
+    __tablename__ = "model_variations"
+    __table_args__ = (UniqueConstraint("model_id", "framework", "slug"),)
+    id = Column(Integer, primary_key=True)
+    model_id = Column(Integer, ForeignKey("model_cards.id"), nullable=False, index=True)
+    # A key of resource_versions.FRAMEWORKS.
+    framework = Column(String(20), nullable=False)
+    slug = Column(String(40), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    created_at = Column(String, default=now)
+
+
+class ResourceVersion(Base):
+    """A numbered, immutable file set of a dataset or of a model variation.
+
+    Owners stage files in one draft (number null) per dataset or variation; publishing
+    assigns the next number. Datasets use variation_id 0.
+    """
+
+    __tablename__ = "resource_versions"
+    __table_args__ = (
+        UniqueConstraint("kind", "resource_id", "variation_id", "number"),
+        Index("ix_resource_versions_scope", "kind", "resource_id", "variation_id"),
+    )
+    id = Column(Integer, primary_key=True)
+    # "dataset" or "model".
+    kind = Column(String(10), nullable=False)
+    resource_id = Column(Integer, nullable=False)
+    variation_id = Column(Integer, nullable=False, default=0)
+    number = Column(Integer, nullable=True)
+    # "draft" or "published".
+    status = Column(String(10), nullable=False, default="draft")
+    note = Column(Text, nullable=False, default="")
+    creator_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    file_count = Column(Integer, nullable=False, default=0)
+    total_size = Column(BigInteger, nullable=False, default=0)
+    created_at = Column(String, default=now)
+    published_at = Column(String, nullable=True)
+
+
+class ResourceVersionFile(Base):
+    __tablename__ = "resource_version_files"
+    __table_args__ = (UniqueConstraint("version_id", "path"),)
+    id = Column(Integer, primary_key=True)
+    version_id = Column(
+        Integer, ForeignKey("resource_versions.id"), nullable=False, index=True
+    )
+    # Sanitized relative path; see resource_versions.clean_path.
+    path = Column(String(240), nullable=False)
+    file_id = Column(Integer, ForeignKey("stored_files.id"), nullable=False, index=True)
+
+
+class UploadSession(Base):
+    """A resumable chunked upload into a draft version; see uploads.py."""
+
+    __tablename__ = "upload_sessions"
+    id = Column(String(32), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # The resource owner, whose quota the file is charged to.
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    version_id = Column(Integer, ForeignKey("resource_versions.id"), nullable=False)
+    path = Column(String(240), nullable=False)
+    total_size = Column(BigInteger, nullable=False)
+    chunk_size = Column(Integer, nullable=False)
+    chunk_count = Column(Integer, nullable=False)
+    # Optional client-declared digest; always verified against the assembled file.
+    sha256 = Column(String(64), nullable=False, default="")
+    received_bytes = Column(BigInteger, nullable=False, default=0)
+    # uploading, assembling, completed or failed.
+    status = Column(String(12), nullable=False, default="uploading", index=True)
+    error = Column(Text, nullable=False, default="")
+    version_file_id = Column(Integer, nullable=True)
+    created_at = Column(String, default=now)
+    # Epoch seconds (UTC): last activity, and when an idle session is removed.
+    updated_at = Column(Float, nullable=False)
+    expires_at = Column(Float, nullable=False, index=True)
+
+
+class UploadChunk(Base):
+    __tablename__ = "upload_chunks"
+    session_id = Column(
+        String(32),
+        ForeignKey("upload_sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    index = Column(Integer, primary_key=True, autoincrement=False)
+    size = Column(Integer, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+
+
+class UserStorageQuota(Base):
+    """Administrator override of the site-wide default storage quota."""
+
+    __tablename__ = "user_storage_quotas"
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    quota_bytes = Column(BigInteger, nullable=False)
+    updated_at = Column(String, default=now, onupdate=now)
 
 
 class UserProgression(Base):

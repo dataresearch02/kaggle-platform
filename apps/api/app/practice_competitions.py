@@ -259,6 +259,10 @@ def import_pack(db, owner, folder):
         db.add(
             SampleImport(key=receipt_key(folder.name), manifest=json.dumps(manifest))
         )
+        from .version_backfill import backfill_resource_versions
+
+        db.flush()
+        backfill_resource_versions(db.connection())
         db.commit()
         return {"status": "imported", **manifest}
     except Exception:

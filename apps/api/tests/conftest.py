@@ -45,6 +45,34 @@ def client():
     engine.dispose()
 
 
+def upload_file(client, version_id, path, content):
+    """Send a file through the chunked upload API into a draft; return its file JSON."""
+    import hashlib
+
+    created = client.post(
+        "/api/uploads",
+        json={
+            "version_id": version_id,
+            "path": path,
+            "size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    assert created.status_code == 201, created.text
+    session = created.json()
+    size = session["chunk_size"]
+    for index in range(session["chunk_count"]):
+        sent = client.put(
+            f"/api/uploads/{session['id']}/chunks/{index}",
+            content=content[index * size : (index + 1) * size],
+        )
+        assert sent.status_code == 200, sent.text
+    assert client.post(f"/api/uploads/{session['id']}/complete").status_code == 202
+    status = client.get(f"/api/uploads/{session['id']}").json()
+    assert status["status"] == "completed", status
+    return status["file"]
+
+
 @pytest.fixture
 def member(client):
     response = client.post(

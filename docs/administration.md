@@ -44,6 +44,7 @@ Administrators get **Administration** in the account menu, which opens `#admin` 
 - **Hidden content:** everything currently hidden, with unhide and delete.
 - **Community:** create, rename, describe, reorder and archive forums, and **Recalculate progression** to rebuild every user's medals and tiers from source data ([community](community.md)).
 - **Audit log:** newest first, filterable by actor (a username or `system`) and by action prefix such as `user.` or `content.hide`.
+- **Storage:** per-user storage of dataset and model files, largest first, with per-user quota overrides ([datasets](datasets.md#storage-quotas)).
 - **Settings:** the site settings below, with an announcement preview.
 
 ## Site settings
@@ -56,6 +57,7 @@ Stored in the `site_settings` table as JSON values. Missing rows use the default
 | `local_login_enabled` | `true` | When `false`, username and password sign-in is refused for everyone except administrators (break-glass access). Existing sessions keep working. This is intended for installations that use Keycloak sign-in: the sign-in dialog then shows only the Keycloak button, and administrators use `#login?local=1`. Keycloak sign-in is not affected. |
 | `competition_creation` | `hosts` | `hosts`: only `host` and `admin` users may create competitions and CSV benchmarks. `everyone`: any active member may. Enforced on `POST /api/competitions` and `POST /api/benchmarks`. |
 | `announcement` | empty | Markdown shown to every visitor as a dismissible banner. Dismissal is remembered per browser until the text changes. |
+| `storage_quota_gib` | `20` | Default storage per user for dataset and model files and unfinished uploads. `PUT /api/admin/users/{id}/storage-quota {quota_gib}` overrides it for one user (`null` restores the default). |
 
 `GET /api/site` returns the public subset (`registration_open`, `local_login_enabled`, `announcement`) plus `oidc_enabled` and `oidc_label` from the deployment configuration. `GET/PUT /api/admin/settings` reads and partially updates all settings.
 
@@ -94,6 +96,8 @@ Hiding also removes the item from search, activity feeds, rankings, medal counts
 | `user.identity_link`, `user.identity_unlink` | A user linked or unlinked a Keycloak identity |
 | `user.password_reset`, `user.sessions_revoked` | Admin credential actions, with revoked counts |
 | `settings.update` | Changed settings with old and new values |
+| `user.storage_quota` | A per-user storage quota override was set or cleared (`detail.from_bytes`, `detail.to_bytes`; null is the site default) |
+| `version.publish`, `version.delete`, `variation.create`, `variation.delete`, `model.card` | An administrator changed versions, variations or the card of another user's dataset or model |
 | `content.hide`, `content.unhide`, `content.delete` | Moderation, including admin deletion of another user's work |
 | `content.update` | An admin edits another user's work title or description, or another user's topic, comment or reply |
 | `report.resolve` | A report is resolved, with the note |
@@ -122,6 +126,9 @@ Catalog lists keep their JSON array responses and accept `offset` and `limit` (a
 | `0008_community_columns` | Nullable `competition_posts.competition_id` (SQLite rebuilds the table) with `scope`/`scope_id`, `edited_at`/`deleted_at` on topics, replies and notebook comments, `competition_topic_settings.locked` |
 | `0009_legacy_discussions_to_forum` | Default forums; legacy discussions and comments copied into General |
 | `0010_community_backfill` | Topic likes copied into votes; topic authors watch their topics |
+| `0011_course_authoring`, `0012_gpu_allocation_lock` | Course authoring columns ([learn](learn.md)) and the GPU allocation lock row ([compute](compute.md)) |
+| `0013_resource_versions_schema` | `model_cards.card`; on PostgreSQL `datasets.size` and `artifact_versions.size` become `BIGINT` |
+| `0014_resource_versions_backfill` | Existing datasets and models become version 1 (models gain a `default` variation) without moving files ([datasets](datasets.md#upgrading-existing-data)) |
 
 New tables (`schema_migrations`, `site_settings`, `content_reports`, `audit_log`, `user_identities`, `oidc_login_attempts`, and the community tables listed in [community](community.md)) are created by `create_all`. Migrations that change data are idempotent, like the column migrations. To add a column, append a new migration to `MIGRATIONS`; never edit or reorder applied ones. Run a single API process while migrations apply.
 
@@ -135,6 +142,7 @@ At startup Arena imports four practice competitions from `apps/api/app/practice_
 | --- | --- | --- |
 | `ARENA_ADMIN_USERNAMES` | empty | Comma-separated existing usernames promoted to `admin` at startup |
 | `ARENA_IMPORT_PRACTICE` | `true` | Import the offline practice competitions at startup |
+| `UPLOAD_CHUNK_BYTES`, `UPLOAD_MAX_FILE_BYTES`, `UPLOAD_MAX_ACTIVE_SESSIONS`, `UPLOAD_SESSION_TTL_HOURS`, `UPLOAD_DIR`, `JOB_INPUT_MAX_BYTES` | 8 MiB, 100 GiB, 8, 24, `$DATA_DIR/upload-sessions`, 20 GiB | Chunked uploads and job input staging; see [datasets](datasets.md#uploads) |
 | `ARENA_OIDC_ISSUER`, `ARENA_OIDC_CLIENT_ID`, `ARENA_OIDC_CLIENT_SECRET` | empty | Keycloak sign-in; enabled only when all three are set. See [authentication.md](authentication.md) |
 | `ARENA_OIDC_CA_FILE`, `ARENA_PUBLIC_URL`, `ARENA_OIDC_LABEL` | empty / request URL / `Sign in with Keycloak` | Keycloak TLS CA bundle, public base URL for redirects, button text |
 | `ARENA_OIDC_ADMIN_GROUPS`, `ARENA_OIDC_HOST_GROUPS` | empty | Comma-separated Keycloak groups mapped to `admin`/`host` at each Keycloak sign-in |

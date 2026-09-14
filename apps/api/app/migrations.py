@@ -461,6 +461,31 @@ def gpu_allocation_lock(connection):
     )
 
 
+def resource_versions_schema(connection):
+    """Model cards gain Markdown; file sizes may exceed 2 GiB on PostgreSQL.
+
+    The version, upload and quota tables are new, so create_all builds them.
+    SQLite INTEGER columns already hold 64-bit values.
+    """
+    add_columns(connection, "model_cards", [("card", "TEXT NOT NULL DEFAULT ''")])
+    if connection.dialect.name != "postgresql":
+        return
+    inspector = inspect(connection)
+    for table in ("datasets", "artifact_versions"):
+        if inspector.has_table(table):
+            connection.execute(
+                text(f"ALTER TABLE {table} ALTER COLUMN size TYPE BIGINT")
+            )
+
+
+def resource_versions_backfill(connection):
+    """Existing datasets and models become version 1; see version_backfill.py."""
+    from .version_backfill import backfill_resource_versions
+
+    result = backfill_resource_versions(connection)
+    logging.getLogger(__name__).info("Versioned existing resources: %s", result)
+
+
 MIGRATIONS = (
     ("0001_user_role_status", user_role_status),
     ("0002_moderation_hidden", moderation_hidden),
@@ -474,6 +499,8 @@ MIGRATIONS = (
     ("0010_community_backfill", community_backfill),
     ("0011_course_authoring", course_authoring),
     ("0012_gpu_allocation_lock", gpu_allocation_lock),
+    ("0013_resource_versions_schema", resource_versions_schema),
+    ("0014_resource_versions_backfill", resource_versions_backfill),
 )
 
 

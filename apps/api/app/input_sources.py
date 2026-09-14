@@ -1,7 +1,19 @@
-"""Grouped notebook inputs, resolved from authorized immutable source files."""
+"""Grouped notebook inputs, resolved from authorized immutable source files.
+
+Dataset and model sources use format_version 3 and name a published version.
+Attaching pins the version that is newest at that moment; a reference with
+`"version": null` follows the latest version and is resolved again whenever it is
+staged. Models also name a variation. Older references (format_version 2) list
+supplemental file-version ids and keep resolving exactly as before.
+
+Background jobs stream inputs of up to JOB_INPUT_MAX_BYTES into their work folder.
+Interactive sessions copy files through the Jupyter contents API, so sources over
+200 MB or 1,000 files are attached without copying and flagged `interactive: false`.
+"""
 
 import base64
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -19,12 +31,38 @@ from .models import (
     CompetitionDataFile,
     ArtifactVersion,
     ModelCard,
+    ModelVariation,
     DatasetProfile,
+    ResourceVersion,
 )
 from .dataset_access import readable as dataset_readable, visible_datasets, visibility
+from .file_store import copy_blob, open_blob
 from .notebook_visibility import require_visible, visible_notebooks
 from .notebook_outputs import readable as output_readable, router
 from .competition_metadata import require_data_access
+from .runtime_jobs import integer
+
+# Attach pins the version that is newest now; None follows the latest version.
+CURRENT = "current"
+INTERACTIVE_BYTES = 200 * 1024 * 1024
+INTERACTIVE_FILES = 1000
+REFERENCE_FILES = 1000
+
+
+def parse_version(value):
+    """A version query value: a number, "latest" to follow new versions, or empty to
+    pin the version that is newest now."""
+    if value is None or value == "":
+        return CURRENT
+    if value == "latest":
+        return None
+    if value.isdigit() and 0 < int(value) < 2**31:
+        return int(value)
+    raise HTTPException(422, "Version must be a number or latest")
+
+
+def job_input_bytes():
+    return integer("JOB_INPUT_MAX_BYTES", 20 * 1024**3, maximum=16 * 1024**4)
 
 
 def safe_path(value):
@@ -48,6 +86,9 @@ class InputFile:
     size: int
     sha256: str = ""
     storage_path: Optional[Path] = None
+    # A stored blob (see file_store.py); preferred over storage_path when set.
+    store: str = ""
+    key: str = ""
 
     def read(self, db):
         if self.kind == "competition":
@@ -59,13 +100,161 @@ class InputFile:
             if content is None:
                 raise HTTPException(404, "Competition input is unavailable")
             return content.encode()
+        if self.store:
+            try:
+                with open_blob(self.store, self.key) as stream:
+                    return stream.read()
+            except (OSError, ValueError):
+                raise HTTPException(404, "Input file is unavailable")
         if not self.storage_path or not self.storage_path.is_file():
             raise HTTPException(404, "Input file is unavailable")
         return self.storage_path.read_bytes()
 
+    def copy_to(self, db, target):
+        """Stream into a new file at target without holding it in memory."""
+        target.unlink(missing_ok=True)
+        if self.kind == "competition":
+            target.write_bytes(self.read(db))
+        elif self.store:
+            try:
+                copy_blob(self.store, self.key, target)
+            except (OSError, ValueError):
+                raise HTTPException(404, "Input file is unavailable")
+        else:
+            if not self.storage_path or not self.storage_path.is_file():
+                raise HTTPException(404, "Input file is unavailable")
+            with self.storage_path.open("rb") as source, target.open("xb") as stream:
+                shutil.copyfileobj(source, stream, 1024 * 1024)
 
-def source_files(db, user, kind, id, selected=None, public=False):
+
+def check_limits(files):
+    if not files:
+        raise HTTPException(422, "This source has no available input files")
+    total = sum(file.size for file in files)
+    if total > job_input_bytes():
+        raise HTTPException(
+            422,
+            f"Inputs are limited to {job_input_bytes() / 1024**3:.0f} GiB per source",
+        )
+    if len({file.filename for file in files}) != len(files):
+        raise HTTPException(422, "Input files must have unique relative paths")
+
+
+def versioned_source(
+    db, user, kind, id, public=False, version=CURRENT, variation_id=None
+):
+    """A format 3 dataset or model reference, or None when it has no versions yet."""
+    from .resource_versions import input_folder, latest, members, parent
+
+    row = parent(db, kind, id, user)
+    if public and kind == "dataset" and visibility(db, id) != "public":
+        raise HTTPException(
+            422, "Publish the input dataset before publishing this notebook"
+        )
+    variation = None
+    if kind == "model":
+        variations = select(ModelVariation).where(ModelVariation.model_id == id)
+        if variation_id is not None:
+            variation = db.scalar(variations.where(ModelVariation.id == variation_id))
+            if not variation:
+                raise HTTPException(
+                    404, "The attached model variation is no longer available"
+                )
+        else:
+            with_files = select(ResourceVersion.variation_id).where(
+                ResourceVersion.kind == "model",
+                ResourceVersion.resource_id == id,
+                ResourceVersion.status == "published",
+                ResourceVersion.file_count > 0,
+            )
+            variation = db.scalar(
+                variations.where(ModelVariation.id.in_(with_files))
+                .order_by(ModelVariation.id)
+                .limit(1)
+            )
+            if not variation:
+                return None
+    elif not db.scalar(
+        select(ResourceVersion.id)
+        .where(ResourceVersion.kind == "dataset", ResourceVersion.resource_id == id)
+        .limit(1)
+    ):
+        return None
+    scope = variation.id if variation else 0
+    if isinstance(version, int):
+        chosen = db.scalar(
+            select(ResourceVersion).where(
+                ResourceVersion.kind == kind,
+                ResourceVersion.resource_id == id,
+                ResourceVersion.variation_id == scope,
+                ResourceVersion.number == version,
+            )
+        )
+        if not chosen or chosen.status != "published":
+            raise HTTPException(
+                404, f"Version {version} of this {kind} is no longer available"
+            )
+    else:
+        chosen = latest(db, kind, id, scope)
+        if not chosen:
+            raise HTTPException(422, f"This {kind} has no published version")
+    files = [
+        InputFile(
+            member.id,
+            safe_path(member.path),
+            "version-file",
+            stored.size,
+            stored.sha256,
+            store=stored.store,
+            key=stored.storage_key,
+        )
+        for member, stored in db.execute(members(chosen.id))
+    ]
+    check_limits(files)
+    folder = input_folder(kind, row.title, id, variation)
+    result = {
+        "format_version": 3,
+        "id": id,
+        "kind": kind,
+        "title": row.title,
+        "path": folder,
+        "version": None if version is None else chosen.number,
+        "resolved_version": chosen.number,
+        # The reference lists up to 1,000 files; staging always uses the whole version.
+        "files": [
+            {
+                "id": file.id,
+                "kind": file.kind,
+                "filename": file.filename,
+                "path": f"{folder}/{file.filename}",
+                "size": file.size,
+                "sha256": file.sha256,
+            }
+            for file in files[:REFERENCE_FILES]
+        ],
+        "file_count": len(files),
+    }
+    if variation:
+        result["variation_id"] = variation.id
+        result["variation"] = f"{variation.framework}/{variation.slug}"
+    return result, files
+
+
+def source_files(
+    db,
+    user,
+    kind,
+    id,
+    selected=None,
+    public=False,
+    version=CURRENT,
+    variation_id=None,
+):
     """Resolve metadata only. Load a single file's bytes when it is actually copied."""
+    if kind in ("dataset", "model") and selected is None:
+        found = versioned_source(db, user, kind, id, public, version, variation_id)
+        if found:
+            return found
     files = []
     if kind in ("dataset", "model"):
         from .artifacts import resource
@@ -106,7 +295,8 @@ def source_files(db, user, kind, id, selected=None, public=False):
                     "artifact",
                     file.size,
                     file.sha256,
-                    DATA_DIR / "artifacts" / file.storage_key,
+                    store="artifacts",
+                    key=file.storage_key,
                 )
             )
         include_primary = kind == "dataset" and (
@@ -116,7 +306,13 @@ def source_files(db, user, kind, id, selected=None, public=False):
                 for file in selected
             )
         )
-        if include_primary and not any(file.filename == row.filename for file in files):
+        if (
+            include_primary
+            and row.storage_key
+            and not any(file.filename == row.filename for file in files)
+        ):
+            from .file_store import primary_store
+
             profile = db.get(DatasetProfile, id)
             files.append(
                 InputFile(
@@ -125,7 +321,8 @@ def source_files(db, user, kind, id, selected=None, public=False):
                     "dataset",
                     row.size,
                     profile.sha256 if profile else "",
-                    DATA_DIR / "uploads" / row.storage_key,
+                    store=primary_store(db, row),
+                    key=row.storage_key,
                 )
             )
         if selected is not None and any(
@@ -265,14 +462,33 @@ def validate_reference(item):
 
 def resolve_attachment(db, user, item, public=False):
     validate_reference(item)
-    result, files = source_files(
-        db,
-        user,
-        item["kind"],
-        item["id"],
-        item["files"],
-        public,
-    )
+    if item["kind"] in ("dataset", "model") and "version" in item:
+        version, variation_id = item["version"], item.get("variation_id")
+        if version is not None and (type(version) is not int or version < 1):
+            raise HTTPException(422, "Invalid input version")
+        if item["kind"] == "model" and type(variation_id) is not int:
+            raise HTTPException(422, "Model inputs must name a variation")
+        found = versioned_source(
+            db,
+            user,
+            item["kind"],
+            item["id"],
+            public,
+            version,
+            variation_id if item["kind"] == "model" else None,
+        )
+        if not found:
+            raise HTTPException(404, "The attached version is no longer available")
+        result, files = found
+    else:
+        result, files = source_files(
+            db,
+            user,
+            item["kind"],
+            item["id"],
+            item["files"],
+            public,
+        )
     # Preserve the source folder across renames; reject arbitrary client paths.
     path = item.get("path", result["path"])
     if not re.fullmatch(
@@ -289,6 +505,13 @@ async def materialize(db, user, hub, folder, item):
     from .notebook_files import mkdir, endpoint
 
     result, files = resolve_attachment(db, user, item)
+    if (
+        len(files) > INTERACTIVE_FILES
+        or sum(file.size for file in files) > INTERACTIVE_BYTES
+    ):
+        # Too large for the contents API; background runs still stage every file.
+        result["interactive"] = False
+        return result
     for file in files:
         content = file.read(db)
         path = (folder + "/" if folder else "") + result["path"] + "/" + file.filename
@@ -330,17 +553,32 @@ def catalog(
         .options(load_only(model.id, model.title))
         .where(model.id < before, model.title.icontains(q[:160], autoescape=True))
     )
+    with_files = select(ResourceVersion.resource_id).where(
+        ResourceVersion.kind == kind,
+        ResourceVersion.status == "published",
+        ResourceVersion.file_count > 0,
+    )
     if kind == "dataset":
-        query = query.where(visible_datasets(user))
+        # Datasets that only have an unpublished draft cannot be attached yet.
+        versioned = select(ResourceVersion.resource_id).where(
+            ResourceVersion.kind == "dataset"
+        )
+        query = query.where(
+            visible_datasets(user),
+            or_(Dataset.id.in_(with_files), Dataset.id.not_in(versioned)),
+        )
     if kind == "model":
         from .permissions import not_hidden
 
         query = query.where(
             not_hidden(ModelCard, user),
-            ModelCard.id.in_(
-                select(ArtifactVersion.resource_id).where(
-                    ArtifactVersion.kind == "models"
-                )
+            or_(
+                ModelCard.id.in_(with_files),
+                ModelCard.id.in_(
+                    select(ArtifactVersion.resource_id).where(
+                        ArtifactVersion.kind == "models"
+                    )
+                ),
             ),
         )
     if kind == "notebook":
@@ -370,6 +608,11 @@ def preview_file(
     import io
 
     limit = 256 * 1024
+    if kind in ("dataset", "model") and file_kind == "version-file":
+        from .resource_versions import file_context, preview_json
+
+        member, stored, _ = file_context(db, kind, id, file_id, user)
+        return preview_json(kind, id, member, stored)
     if kind in ("dataset", "model") and (file_kind == "artifact" or kind == "model"):
         from .artifacts import resource
 
@@ -379,8 +622,11 @@ def preview_file(
         if not row or row.kind != resource_kind or row.resource_id != id:
             raise HTTPException(404, "Input file not found")
         filename = row.path
-        with (DATA_DIR / "artifacts" / row.storage_key).open("rb") as stream:
-            content = stream.read(limit + 1)
+        try:
+            with open_blob("artifacts", row.storage_key) as stream:
+                content = stream.read(limit + 1)
+        except (OSError, ValueError):
+            raise HTTPException(404, "Input file is unavailable")
     elif kind == "competition":
         from .metadata_routes import member_file
 
@@ -388,11 +634,16 @@ def preview_file(
         filename, content = row.path, row.content.encode()[: limit + 1]
     elif kind == "dataset":
         row = dataset_readable(db, id, user)
-        if file_id != id:
+        if file_id != id or not row.storage_key:
             raise HTTPException(404, "Input file not found")
+        from .file_store import primary_store
+
         filename = row.filename
-        with (DATA_DIR / "uploads" / row.storage_key).open("rb") as stream:
-            content = stream.read(limit + 1)
+        try:
+            with open_blob(primary_store(db, row), row.storage_key) as stream:
+                content = stream.read(limit + 1)
+        except (OSError, ValueError):
+            raise HTTPException(404, "Input file is unavailable")
     elif kind in ("notebook", "notebook-output"):
         row = output_readable(db, file_id, user)
         if (kind == "notebook" and row.notebook_id != id) or (

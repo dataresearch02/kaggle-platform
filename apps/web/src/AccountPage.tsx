@@ -10,6 +10,7 @@ import {
   type CompetitionResult,
 } from './api';
 import GpuUsageMeter, { useComputeUsage } from './GpuUsageMeter';
+import StorageMeter from './StorageMeter';
 import { Avatar, type Profile } from './AccountMenu';
 import ActivityFeed from './ActivityFeed';
 import {
@@ -649,6 +650,10 @@ export default function AccountPage({
               <section className="account-card">
                 <h2>Compute</h2>
                 <GpuUsageMeter usage={usage} />
+              </section>
+              <section className="account-card">
+                <h2>Storage</h2>
+                <StorageMeter />
               </section>
               {identities && (
                 <section className="account-card linked-identities">

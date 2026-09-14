@@ -26,6 +26,8 @@ DEFAULTS = {
     "gpu_weekly_hours": 30,
     # GPUs Arena may allocate at once. One live GPU session holds a whole card.
     "gpu_capacity": 1,
+    # Default dataset and model storage per user; see storage_quotas.py.
+    "storage_quota_gib": 20,
 }
 PUBLIC = ("registration_open", "local_login_enabled", "announcement")
 
@@ -52,6 +54,7 @@ class SettingsInput(BaseModel):
     max_schedules_per_user: Optional[int] = Field(default=None, ge=0, le=100)
     gpu_weekly_hours: Optional[float] = Field(default=None, ge=0, le=168)
     gpu_capacity: Optional[int] = Field(default=None, ge=0, le=16)
+    storage_quota_gib: Optional[float] = Field(default=None, ge=0, le=1048576)
 
 
 def update_settings(db, data):

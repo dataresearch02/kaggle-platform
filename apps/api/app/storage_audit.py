@@ -32,7 +32,18 @@ def audit(db, root=DATA_DIR):
         referenced = set()
         total = 0
         rows = list(db.scalars(select(model)))
+        if directory in ("uploads", "artifacts"):
+            # Files of older dataset and model versions are referenced by stored_files.
+            referenced.update(
+                db.scalars(
+                    select(models.StoredFile.storage_key).where(
+                        models.StoredFile.store == directory
+                    )
+                )
+            )
         for row in rows:
+            if not row.storage_key:
+                continue  # A dataset whose latest version has no CSV file.
             referenced.add(row.storage_key)
             path = root / directory / row.storage_key
             if not path.is_file() or path.is_symlink():

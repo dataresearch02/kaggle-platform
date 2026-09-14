@@ -266,15 +266,13 @@ async def execute_snapshot(job_id, hub=None):
             for item in document.get("metadata", {}).get("arena_inputs", []):
                 from .dataset_access import readable
 
+                from .file_store import primary_path
+
                 dataset = readable(db, item["id"], user)
-                if not dataset:
+                source = primary_path(db, dataset) if dataset else None
+                if not source:
                     raise ValueError("An attached dataset is no longer available")
-                inputs.append(
-                    (
-                        f"arena-input-{dataset.id}.csv",
-                        DATA_DIR / "uploads" / dataset.storage_key,
-                    )
-                )
+                inputs.append((f"arena-input-{dataset.id}.csv", source))
         await ensure_server(user, hub)
         deadline = time.monotonic() + 240
         while (await hub.status(user))["state"] != "ready":

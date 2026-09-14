@@ -103,6 +103,9 @@ def create(
     source_kind: Optional[str] = None,
     source_id: Optional[int] = Query(default=None, ge=1),
     exercise_id: Optional[int] = Query(default=None, ge=1),
+    # Model variation and version to attach; by default the newest version is pinned.
+    variation_id: Optional[int] = Query(default=None, ge=1),
+    version: Optional[str] = Query(default=None, max_length=10),
 ):
     if exercise_id is not None and (
         competition_id is not None or source_kind is not None or source_id is not None
@@ -113,9 +116,16 @@ def create(
     if source_kind is not None or source_id is not None:
         if source_kind not in ("dataset", "model") or source_id is None:
             raise HTTPException(422, "Select a dataset or model input")
-        from .input_sources import source_files
+        from .input_sources import parse_version, source_files
 
-        source, _ = source_files(db, user, source_kind, source_id)
+        source, _ = source_files(
+            db,
+            user,
+            source_kind,
+            source_id,
+            version=parse_version(version),
+            variation_id=variation_id,
+        )
     exercise = None
     if exercise_id is not None:
         from .learn import exercise_context

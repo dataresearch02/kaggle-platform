@@ -454,8 +454,10 @@ def import_samples(db, data_dir=DATA_DIR):
             manifest["discussions"].append(discussion.id)
         db.add(SampleImport(key=PACK, manifest=json.dumps(manifest)))
         from .competition_metadata import backfill_metadata
+        from .version_backfill import backfill_resource_versions
 
         db.flush()
+        backfill_resource_versions(db.connection())
         backfill_metadata(db)
         return {"status": "imported", **manifest}
     except Exception:

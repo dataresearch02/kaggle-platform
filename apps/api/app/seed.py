@@ -27,6 +27,7 @@ def seed(db):
     if db.scalar(select(User).where(User.username == "arena")):
         # Upgrades existing installations: lessons, progress and seeded exercises.
         ensure_learning_content(db)
+        ensure_versions(db)
         return
     user = User(
         username="arena", password_hash=hash_password(secrets.token_urlsafe(32))
@@ -186,3 +187,12 @@ def seed(db):
     )
     db.commit()
     ensure_learning_content(db)
+    ensure_versions(db)
+
+
+def ensure_versions(db):
+    """Datasets and models without versions (such as seeds) gain version 1 once."""
+    from .version_backfill import backfill_resource_versions
+
+    backfill_resource_versions(db.connection())
+    db.commit()

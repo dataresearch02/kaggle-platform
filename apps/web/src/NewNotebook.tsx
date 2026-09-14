@@ -14,7 +14,8 @@ export default function NewNotebook({
   close: () => void;
   saved: () => void;
   competitionId?: number;
-  inputSource?: { kind: 'dataset' | 'model'; id: number };
+  /** A model input may name a variation; its newest version is pinned. */
+  inputSource?: { kind: 'dataset' | 'model'; id: number; variationId?: number };
   /** Seeds the draft with an exercise prompt, starter code and practice data. */
   exerciseId?: number;
   initialTitle?: string;
@@ -49,6 +50,8 @@ export default function NewNotebook({
     if (inputSource) {
       parameters.set('source_kind', inputSource.kind);
       parameters.set('source_id', String(inputSource.id));
+      if (inputSource.variationId)
+        parameters.set('variation_id', String(inputSource.variationId));
     }
     if (exerciseId) parameters.set('exercise_id', String(exerciseId));
     void api<{ id: string }>(`/notebook-drafts?${parameters}`, { method: 'POST' })

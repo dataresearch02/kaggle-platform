@@ -42,12 +42,18 @@ def stage_inputs(db, user, document, work):
     Shared by competition commits and background notebook runs. Access is checked for
     the job owner at execution time, so inputs revoked since queueing are refused.
     """
+    from .file_store import copy_blob, primary_store
+
     metadata = document.get("metadata", {})
     for item in metadata.get("arena_inputs", []):
         dataset = readable(db, item["id"], user)
-        (work / f"arena-input-{dataset.id}.csv").write_bytes(
-            (DATA_DIR / "uploads" / dataset.storage_key).read_bytes()
-        )
+        if not dataset.storage_key:
+            raise ValueError(
+                f"The latest version of the attached dataset {dataset.title!r} has no CSV file"
+            )
+        target = work / f"arena-input-{dataset.id}.csv"
+        target.unlink(missing_ok=True)
+        copy_blob(primary_store(db, dataset), dataset.storage_key, target)
     from .notebook_outputs import readable as readable_output, input_path
 
     for item in metadata.get("arena_notebook_inputs", []):
@@ -60,11 +66,12 @@ def stage_inputs(db, user, document, work):
     from .input_sources import resolve_attachment
 
     for item in metadata.get("arena_input_sources", []):
+        # Pinned versions resolve to their files; "latest" references resolve now.
         source, files = resolve_attachment(db, user, item)
         for input_file in files:
             target = work / source["path"] / input_file.filename
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(input_file.read(db))
+            input_file.copy_to(db, target)
     from .practice_inputs import stage_practice_inputs
 
     stage_practice_inputs(metadata.get("arena_practice_inputs", []), work)

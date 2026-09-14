@@ -1,19 +1,12 @@
 import { useEffect, useState } from 'react';
 import { X, Table2 } from 'lucide-react';
 import { api } from './api';
+import FilePreview, { type PreviewData } from './FilePreview';
 import type { Input, InputFile } from './NotebookPanel';
 
 export type InputSelection = {
   source: Input;
   file: InputFile;
-};
-type Preview = {
-  format: string;
-  columns?: string[];
-  rows?: string[][];
-  text?: string;
-  message?: string;
-  truncated?: boolean;
 };
 
 export default function NotebookInputPreview({
@@ -23,14 +16,14 @@ export default function NotebookInputPreview({
   selection: InputSelection;
   close: () => void;
 }) {
-  const [data, setData] = useState<Preview | null>(null);
+  const [data, setData] = useState<PreviewData | null>(null);
   const [error, setError] = useState('');
   const { source, file } = selection;
   useEffect(() => {
     let active = true;
     setData(null);
     setError('');
-    api<Preview>(
+    api<PreviewData>(
       `/input-sources/${source.kind || 'dataset'}/${source.id}/files/${file.id}/preview?file_kind=${encodeURIComponent(file.kind || '')}`,
     )
       .then((result) => {
@@ -61,37 +54,14 @@ export default function NotebookInputPreview({
           <p role="alert">{error}</p>
         ) : !data ? (
           <p role="status">Loading input data…</p>
-        ) : data.format === 'table' ? (
-          <table>
-            <thead>
-              <tr>
-                {data.columns?.map((column, i) => (
-                  <th key={i} scope="col">
-                    {column || `Column ${i + 1}`}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {data.rows?.map((row, i) => (
-                <tr key={i}>
-                  {data.columns?.map((_, j) => (
-                    <td key={j}>{row[j] ?? ''}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : data.format === 'text' ? (
-          <pre>{data.text}</pre>
         ) : (
-          <p>{data.message}</p>
+          <FilePreview data={data} />
         )}
       </div>
       {data && (
         <small>
           {data.format === 'table'
-            ? `${data.rows?.length || 0} preview rows · up to 50 columns`
+            ? `${data.rows?.length || 0} preview rows · up to ${data.summary ? 100 : 50} columns`
             : 'Read-only preview'}
           {data.truncated ? ' · Preview limited; the full file is available to your notebook.' : ''}
         </small>

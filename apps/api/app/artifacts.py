@@ -1,6 +1,11 @@
-"""Immutable supplemental dataset files and hosted model artifacts."""
+"""Immutable supplemental dataset files and hosted model artifacts.
+
+This single-request API predates versions. Each upload still records a file version
+here and also publishes the next dataset or model version (see resource_versions.py).
+"""
 
 import hashlib
+import os
 import secrets
 from pathlib import PurePosixPath
 from typing import Literal
@@ -14,8 +19,10 @@ from .auth import current_user
 from .code_pages import optional_user
 from .dataset_access import readable
 from .db import DATA_DIR, get_db
-from .models import ArtifactVersion, Dataset, ModelCard, WorkFileDeletion
+from .file_store import blob_path, fallback_path, temporary_path
+from .models import ArtifactVersion, Dataset, ModelCard, StoredFile, WorkFileDeletion
 from .permissions import can_manage, can_view
+from .storage_quotas import require_capacity
 
 router = APIRouter(prefix="/api/assets", tags=["Artifact files"])
 Kind = Literal["datasets", "models"]
@@ -76,7 +83,7 @@ async def upload(
     user=Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    resource(db, kind, id, user, write=True)
+    row = resource(db, kind, id, user, write=True)
     if (
         not path
         or len(path) > 240
@@ -88,22 +95,26 @@ async def upload(
         raise HTTPException(
             422, "Use a relative file path without empty, dot or parent segments"
         )
-    root = DATA_DIR / "artifacts"
-    root.mkdir(exist_ok=True)
+    from .resource_versions import add_legacy_file
+
     key = secrets.token_hex(24)
-    target = root / key
+    target, temporary = blob_path("artifacts", key), temporary_path("artifacts", key)
     size, digest = 0, hashlib.sha256()
     try:
-        with target.open("xb") as stream:
+        with temporary.open("xb") as stream:
             while chunk := await file.read(256 * 1024):
                 size += len(chunk)
                 if size > MAX_BYTES:
                     raise HTTPException(
-                        413, "Each artifact is limited to 10 MB for local testing"
+                        413,
+                        "Single-request files are limited to 10 MB; upload larger"
+                        " files as a new version",
                     )
                 digest.update(chunk)
                 stream.write(chunk)
-        row = ArtifactVersion(
+        require_capacity(db, row.owner_id, size)
+        os.replace(temporary, target)
+        artifact = ArtifactVersion(
             kind=kind,
             resource_id=id,
             path=path,
@@ -111,10 +122,28 @@ async def upload(
             size=size,
             sha256=digest.hexdigest(),
         )
-        db.add(row)
+        stored = StoredFile(
+            owner_id=row.owner_id,
+            store="artifacts",
+            storage_key=key,
+            size=size,
+            sha256=digest.hexdigest(),
+        )
+        db.add_all([artifact, stored])
+        db.flush()
+        # Keep versions current: this becomes the next version of the resource.
+        add_legacy_file(
+            db,
+            "dataset" if kind == "datasets" else "model",
+            row,
+            fallback_path(path, "file"),
+            stored,
+            user,
+        )
         db.commit()
-        return info(row)
+        return info(artifact)
     except BaseException:
+        temporary.unlink(missing_ok=True)
         target.unlink(missing_ok=True)
         raise
 

@@ -334,6 +334,10 @@ def import_titanic(db, root, data_dir=DATA_DIR):
             "tutorial_output_imported": (root / "outputs/submission.csv").is_file(),
         }
         db.add(SampleImport(key=PACK, manifest=json.dumps(result)))
+        from .version_backfill import backfill_resource_versions
+
+        db.flush()
+        backfill_resource_versions(db.connection())
         db.commit()
         return {"status": "imported", **result}
     except Exception:

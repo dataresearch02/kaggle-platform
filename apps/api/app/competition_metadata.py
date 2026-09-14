@@ -133,11 +133,18 @@ def initialize_competition(db, competition):
 
 
 def ensure_profile(db, dataset):
+    from .file_store import primary_path
+
     profile = db.get(DatasetProfile, dataset.id)
     if not profile:
-        raw = (DATA_DIR / "uploads" / dataset.storage_key).read_bytes()
-        values = profile_csv(raw.decode("utf-8-sig"))
-        values["sha256"] = hashlib.sha256(raw).hexdigest()
+        source = primary_path(db, dataset)
+        if source:
+            raw = source.read_bytes()
+            values = profile_csv(raw.decode("utf-8-sig"))
+            values["sha256"] = hashlib.sha256(raw).hexdigest()
+        else:
+            # A dataset whose latest version has no CSV file.
+            values = {"columns_json": "[]", "row_count": 0, "sha256": ""}
         profile = DatasetProfile(dataset_id=dataset.id, **values)
         db.add(profile)
     return profile
@@ -145,9 +152,11 @@ def ensure_profile(db, dataset):
 
 def backfill_metadata(db):
     """Idempotent per-record migration. Existing metadata and snapshots are preserved."""
+    from .file_store import primary_path
+
     new_competitions = set()
     for dataset in db.scalars(select(Dataset)):
-        if (DATA_DIR / "uploads" / dataset.storage_key).is_file():
+        if primary_path(db, dataset):
             ensure_profile(db, dataset)
     for competition in db.scalars(select(Competition)):
         if not db.get(CompetitionOverview, competition.id):
@@ -161,8 +170,8 @@ def backfill_metadata(db):
         ):
             dataset = db.get(Dataset, dataset_id)
             if competition_id in new_competitions and dataset:
-                path = DATA_DIR / "uploads" / dataset.storage_key
-                if path.is_file():
+                path = primary_path(db, dataset)
+                if path:
                     add_file(
                         db,
                         competition_id,

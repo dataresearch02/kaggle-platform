@@ -7,10 +7,10 @@ import re
 import secrets
 import time
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Optional
 from weakref import WeakValueDictionary
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
@@ -172,9 +172,13 @@ async def attach_input(
         dataset = readable(db, dataset_id, user)
         if dataset is None:
             raise HTTPException(404, "Dataset not found")
-        source = DATA_DIR / "uploads" / dataset.storage_key
-        if not source.is_file():
-            raise HTTPException(404, "Dataset file not found")
+        from .file_store import primary_path
+
+        source = primary_path(db, dataset)
+        if not source:
+            raise HTTPException(
+                404, "The latest version of this dataset has no CSV file"
+            )
         path = f"arena-input-{dataset.id}.csv"
         content = await asyncio.to_thread(source.read_bytes)
         hub.expect(
@@ -467,16 +471,26 @@ async def attach_source(
     id: str,
     source_kind: str,
     source_id: int,
+    # Dataset/model version: a number, "latest", or omitted to pin the newest now.
+    version: Optional[str] = Query(default=None, max_length=10),
+    variation_id: Optional[int] = Query(default=None, ge=1),
     user=Depends(current_user),
     db=Depends(get_db),
     hub=Depends(get_hub),
 ):
-    from .input_sources import source_files, materialize
+    from .input_sources import parse_version, source_files, materialize
     from .notebook_files import folder_for
 
     async with user_lock(user.id):
         path = resolve(kind, id, user, db)
-        item, _ = source_files(db, user, source_kind, source_id)
+        item, _ = source_files(
+            db,
+            user,
+            source_kind,
+            source_id,
+            version=parse_version(version),
+            variation_id=variation_id,
+        )
         sessions = hub.expect(
             await hub.request(
                 "GET", f"/user/{hub_username(user)}/api/sessions", contents=True

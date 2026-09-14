@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -74,6 +74,99 @@ def old_database():
         for statement in OLD_SCHEMA:
             connection.execute(text(statement))
     return engine
+
+
+def test_resource_versions_backfill_old_data_once(tmp_path):
+    from app.db import DATA_DIR, Base
+    from app.models import (
+        ModelVariation,
+        ResourceVersion,
+        ResourceVersionFile,
+        StoredFile,
+    )
+    from app.version_backfill import backfill_resource_versions
+
+    engine = old_database()
+    with engine.begin() as connection:
+        for statement in (
+            """CREATE TABLE model_cards (
+                id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL,
+                title VARCHAR(160) NOT NULL, description TEXT NOT NULL,
+                framework VARCHAR(80) NOT NULL, license VARCHAR(80) NOT NULL,
+                url TEXT NOT NULL, created_at VARCHAR)""",
+            """CREATE TABLE artifact_versions (
+                id INTEGER PRIMARY KEY, kind VARCHAR(20) NOT NULL,
+                resource_id INTEGER NOT NULL, path VARCHAR(240) NOT NULL,
+                storage_key VARCHAR(80) NOT NULL UNIQUE, size INTEGER NOT NULL,
+                sha256 VARCHAR(64) NOT NULL, created_at VARCHAR)""",
+            "INSERT INTO model_cards (id, owner_id, title, description, framework,"
+            " license, url) VALUES (1, 1, 'Net', 'Kept', 'Torch', 'MIT', ''),"
+            " (2, 1, 'Reference', 'Link only', 'Keras', 'MIT', 'https://x')",
+            "INSERT INTO artifact_versions (id, kind, resource_id, path, storage_key,"
+            " size, sha256) VALUES"
+            " (1, 'datasets', 1, 'extra/old.txt', 'artifact-old', 3, 'x'),"
+            " (2, 'datasets', 1, 'extra/old.txt', 'artifact-new', 3, 'y'),"
+            " (3, 'models', 1, 'weights.pt', 'artifact-weights', 7, 'z')",
+        ):
+            connection.execute(text(statement))
+    (DATA_DIR / "uploads").mkdir(exist_ok=True)
+    (DATA_DIR / "uploads" / "a.csv").write_text("x\n1\n")
+    Base.metadata.create_all(engine)  # As at startup: new tables, old tables unchanged.
+    assert "0014_resource_versions_backfill" in run_migrations(engine)
+    assert "card" in columns(engine, "model_cards")
+
+    def snapshot():
+        with sessionmaker(bind=engine)() as db:
+            versions = db.scalars(
+                select(ResourceVersion).order_by(ResourceVersion.id)
+            ).all()
+            files = db.execute(
+                select(
+                    ResourceVersionFile.path,
+                    StoredFile.store,
+                    StoredFile.storage_key,
+                    StoredFile.size,
+                )
+                .join(StoredFile, StoredFile.id == ResourceVersionFile.file_id)
+                .order_by(ResourceVersionFile.path)
+            ).all()
+            variations = db.execute(
+                select(
+                    ModelVariation.model_id,
+                    ModelVariation.framework,
+                    ModelVariation.slug,
+                )
+            ).all()
+            return (
+                [
+                    (v.kind, v.resource_id, v.number, v.status, v.file_count)
+                    for v in versions
+                ],
+                [tuple(row) for row in files],
+                sorted(tuple(row) for row in variations),
+                db.scalar(select(func.count()).select_from(StoredFile)),
+            )
+
+    before = snapshot()
+    assert before[0] == [
+        ("dataset", 1, 1, "published", 2),
+        ("model", 1, 1, "published", 1),
+    ]
+    # The primary CSV keeps its uploads/ blob; only the newest supplemental file is used.
+    assert before[1] == [
+        ("a.csv", "uploads", "a.csv", 4),
+        ("extra/old.txt", "artifacts", "artifact-new", 3),
+        ("weights.pt", "artifacts", "artifact-weights", 7),
+    ]
+    assert before[2] == [(1, "pytorch", "default"), (2, "tensorflow", "default")]
+    with engine.begin() as connection:
+        assert backfill_resource_versions(connection) == {"datasets": 0, "models": 0}
+    assert run_migrations(engine) == []
+    with engine.begin() as connection:
+        connection.execute(SchemaMigration.__table__.delete())
+    assert len(run_migrations(engine)) == len(MIGRATIONS)
+    assert snapshot() == before
+    engine.dispose()
 
 
 def columns(engine, table):

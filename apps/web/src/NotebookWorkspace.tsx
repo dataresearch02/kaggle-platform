@@ -639,22 +639,29 @@ export default function NotebookWorkspace({
   }[];
   const sourceInputs = (document.metadata.arena_input_sources || []) as NotebookInput[];
   async function attach(item: NotebookInput) {
+    const parameters = new URLSearchParams();
+    if (item.variation_id) parameters.set('variation_id', String(item.variation_id));
+    // Changing an attached version; new dataset and model sources pin their newest version.
+    if (item.resolved_version !== undefined && item.version !== undefined)
+      parameters.set('version', item.version === null ? 'latest' : String(item.version));
+    const query = parameters.toString();
     const attached = await api<NotebookInput>(
-      `${base}/input-sources/${item.kind || 'dataset'}/${item.id}`,
+      `${base}/input-sources/${item.kind || 'dataset'}/${item.id}${query ? `?${query}` : ''}`,
       { method: 'POST' },
     );
+    const same = (input: NotebookInput) =>
+      input.id === attached.id &&
+      input.kind === attached.kind &&
+      (input.variation_id ?? null) === (attached.variation_id ?? null);
+    const reattached = sourceInputs.some(same);
     update((previous) => ({
       ...previous,
       metadata: {
         ...previous.metadata,
-        arena_input_sources: [
-          ...sourceInputs.filter(
-            (input) => !(input.id === attached.id && input.kind === attached.kind),
-          ),
-          attached,
-        ],
+        arena_input_sources: [...sourceInputs.filter((input) => !same(input)), attached],
       },
     }));
+    if (reattached) return;
     const csv = attached.files?.find((file) => file.filename.endsWith('.csv'));
     insert(
       'code',
@@ -673,7 +680,12 @@ export default function NotebookWorkspace({
         metadata: {
           ...previous.metadata,
           arena_input_sources: sourceInputs.filter(
-            (input) => !(input.id === item.id && input.kind === item.kind),
+            (input) =>
+              !(
+                input.id === item.id &&
+                input.kind === item.kind &&
+                (input.variation_id ?? null) === (item.variation_id ?? null)
+              ),
           ),
         },
       }));

@@ -555,18 +555,26 @@ export default function CodePage({
             kind: string;
             title: string;
             path: string;
+            resolved_version?: number;
+            variation?: string;
             files: { id: number; kind?: string; filename: string; path: string }[];
           }[]
         ).map((input) => (
-          <article key={`${input.kind}-${input.id}`} className="code-published-cell">
-            <h3>{input.title}</h3>
+          <article key={`${input.kind}-${input.id}-${input.path}`} className="code-published-cell">
+            <h3>
+              {input.title}
+              {input.variation ? ` · ${input.variation}` : ''}
+              {input.resolved_version ? ` · version ${input.resolved_version}` : ''}
+            </h3>
             <code>{input.path}</code>
             <ul>
               {input.files.map((file) => (
                 <li key={`${file.kind || input.kind}-${file.id}`}>
                   <a
                     href={
-                      file.kind === 'artifact'
+                      file.kind === 'version-file'
+                        ? `/api/${input.kind === 'model' ? 'models' : 'datasets'}/${input.id}/files/${file.id}/download`
+                        : file.kind === 'artifact'
                         ? `/api/assets/${input.kind === 'model' ? 'models' : 'datasets'}/${input.id}/${file.id}/download`
                         : input.kind === 'competition'
                           ? `/api/competitions/${input.id}/files/${file.id}/download`

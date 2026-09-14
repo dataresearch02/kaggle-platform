@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { X, ArrowRight, Globe, Sparkles } from 'lucide-react';
-import { api, type MetricInfo } from './api';
+import { X, ArrowRight, Globe, Sparkles, UploadCloud } from 'lucide-react';
+import {
+  api,
+  formatBytes,
+  FRAMEWORKS,
+  type Item,
+  type MetricInfo,
+  type VersionInfo,
+} from './api';
 import FileUpload from './FileUpload';
+import StorageMeter from './StorageMeter';
+import { uploadFile } from './chunkedUpload';
 const starterCode = 'import pandas as pd\n\n# Upload a CSV in JupyterLab to get started.\n';
 
 export default function CreatePage({
@@ -21,6 +30,11 @@ export default function CreatePage({
   const [busy, setBusy] = useState(false);
   const [metrics, setMetrics] = useState<MetricInfo[]>([]);
   const [metric, setMetric] = useState('RMSE');
+  // Datasets: files upload in resumable chunks into the new dataset's first version.
+  const [files, setFiles] = useState<File[]>([]);
+  const [progress, setProgress] = useState<{ index: number; sent: number } | null>(null);
+  const created = useRef<{ id: number; versionId: number } | null>(null);
+  const uploads = useRef<AbortController | null>(null);
   const challenge = page === 'competitions' || page === 'benchmarks';
   useEffect(() => {
     if (!challenge) return;
@@ -46,6 +60,7 @@ export default function CreatePage({
     heading.current?.focus();
     return () => {
       clearTimeout(timer.current);
+      uploads.current?.abort();
       panel?.close();
       document.body.style.overflow = previous;
       returnFocus?.focus();
@@ -55,6 +70,36 @@ export default function CreatePage({
     if (busy || closing) return;
     setClosing(true);
     timer.current = setTimeout(done, 220);
+  }
+  async function createDataset(form: FormData) {
+    if (!files.length) throw new Error('Choose at least one file to upload.');
+    if (!created.current) {
+      const dataset = await api<Item & { draft_version: VersionInfo }>('/datasets/drafts', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: form.get('title'),
+          description: form.get('description'),
+          tags: form.get('tags') || '',
+          license: form.get('license') || 'CC0-1.0',
+        }),
+      });
+      created.current = { id: dataset.id, versionId: dataset.draft_version.id };
+    }
+    const { id, versionId } = created.current;
+    uploads.current = new AbortController();
+    for (const [index, file] of files.entries()) {
+      setProgress({ index, sent: 0 });
+      // Uploading the same file again resumes or replaces it in the draft.
+      await uploadFile(file, versionId, file.webkitRelativePath || file.name, {
+        signal: uploads.current.signal,
+        onProgress: (sent) => setProgress({ index, sent }),
+      });
+    }
+    await api(`/datasets/${id}/versions/draft/publish`, {
+      method: 'POST',
+      body: JSON.stringify({ note: 'Initial version' }),
+    });
+    success();
   }
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -69,17 +114,26 @@ export default function CreatePage({
       f.set('deadline', new Date(String(f.get('deadline'))).toISOString());
     }
     try {
-      await api(`/${page}`, {
-        method: 'POST',
-        body: ['datasets', 'competitions', 'benchmarks'].includes(page)
-          ? f
-          : JSON.stringify(Object.fromEntries(f)),
-      });
-      success();
+      if (page === 'datasets') await createDataset(f);
+      else {
+        await api(`/${page}`, {
+          method: 'POST',
+          body: ['competitions', 'benchmarks'].includes(page)
+            ? f
+            : JSON.stringify(Object.fromEntries(f)),
+        });
+        success();
+      }
     } catch (e) {
-      setError((e as Error).message);
+      const message = (e as Error).message;
+      setError(
+        created.current
+          ? `${message} The dataset is saved as a private draft: publish again to resume the upload, or finish it from the dataset page in Your Work.`
+          : message,
+      );
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
   return (
@@ -138,12 +192,85 @@ export default function CreatePage({
           <form onSubmit={submit} className="publish-form">
             <fieldset disabled={busy}>
               {page === 'datasets' && (
-                <FileUpload
-                  name="file"
-                  label="CSV file"
-                  maxMB={10}
-                  hint="Saved privately. Use dataset visibility settings to publish or invite readers. UTF-8 CSV with unique column names and at least one data row."
-                />
+                <section className="upload-section">
+                  <h2>Files</h2>
+                  <p>
+                    CSV, JSON, text, images, NumPy arrays, archives or any other files. Large files
+                    upload in resumable chunks. The dataset is saved privately as version 1; use its
+                    visibility settings to publish or invite readers.
+                  </p>
+                  <div
+                    className="upload-drop"
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      const dropped = Array.from(event.dataTransfer.files);
+                      if (!busy) setFiles((old) => [...old, ...dropped]);
+                    }}
+                  >
+                    <UploadCloud size={38} strokeWidth={1.3} />
+                    <strong>Drag and drop files here</strong>
+                    <span>or choose files from your computer</span>
+                    <label className="button secondary upload-browse">
+                      Browse files
+                      <input
+                        type="file"
+                        multiple
+                        aria-label="Dataset files"
+                        onChange={(event) => {
+                          const chosen = Array.from(event.currentTarget.files || []);
+                          setFiles((old) => [...old, ...chosen]);
+                          event.currentTarget.value = '';
+                        }}
+                      />
+                    </label>
+                  </div>
+                  {files.length > 0 && (
+                    <ul className="upload-rows">
+                      {files.map((file, index) => (
+                        <li key={`${file.name}-${file.size}-${index}`}>
+                          <div className="upload-row-heading">
+                            <strong>{file.webkitRelativePath || file.name}</strong>
+                            <span>
+                              {formatBytes(file.size)}
+                              <button
+                                type="button"
+                                className="icon-button"
+                                aria-label={`Remove ${file.name}`}
+                                onClick={() =>
+                                  setFiles((old) => old.filter((_, position) => position !== index))
+                                }
+                              >
+                                <X size={16} />
+                              </button>
+                            </span>
+                          </div>
+                          {progress && progress.index >= index && (
+                            <div
+                              className="gpu-meter-track"
+                              role="progressbar"
+                              aria-label={`Upload progress for ${file.name}`}
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-valuenow={
+                                progress.index > index
+                                  ? 100
+                                  : Math.floor((progress.sent / (file.size || 1)) * 100)
+                              }
+                            >
+                              <div
+                                style={{
+                                  width: `${progress.index > index ? 100 : (progress.sent / (file.size || 1)) * 100}%`,
+                                }}
+                              />
+                            </div>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <StorageMeter compact />
+                </section>
               )}
               <h2>Details</h2>
               <label>
@@ -273,12 +400,17 @@ export default function CreatePage({
                 <>
                   <label>
                     Framework
-                    <input
-                      name="framework"
-                      placeholder="PyTorch, scikit-learn…"
-                      required
-                      maxLength={80}
-                    />
+                    <select name="framework" required defaultValue="PyTorch">
+                      {FRAMEWORKS.map((framework) => (
+                        <option key={framework.value} value={framework.label}>
+                          {framework.label}
+                        </option>
+                      ))}
+                    </select>
+                    <small>
+                      The first variation uses this framework. Add variations such as "base" or
+                      "small" on the model page.
+                    </small>
                   </label>
                   <label>
                     Model or documentation URL (optional)
@@ -293,7 +425,11 @@ export default function CreatePage({
                     This link is shown as an external reference. It will not be reachable from an
                     offline installation.
                   </small>
-                  <small>Create the card, then upload versioned files from its details page.</small>
+                  <small>
+                    The card starts from a template with Overview, Intended use, Training data,
+                    Evaluation, Limitations &amp; bias, License and How to use. Upload versioned
+                    files from the model page.
+                  </small>
                 </>
               )}
               {page === 'notebooks' && (
@@ -323,7 +459,7 @@ export default function CreatePage({
                   Cancel
                 </button>
                 <button className="button" disabled={busy}>
-                  {busy ? 'Publishing…' : 'Publish'}
+                  {busy ? (progress ? 'Uploading…' : 'Publishing…') : 'Publish'}
                   <ArrowRight size={16} />
                 </button>
               </div>

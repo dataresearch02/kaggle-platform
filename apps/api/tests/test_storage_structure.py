@@ -84,7 +84,9 @@ def test_model_artifact_input_manifest(member):
         user = db.scalar(select(User).where(User.username == "learner"))
         manifest, files = source_files(db, user, "model", model["id"])
         assert files[0].read(db) == b"\x00weights"
-        assert manifest["files"][0]["kind"] == "artifact"
+        # Model inputs name a published version of a variation (format 3).
+        assert manifest["format_version"] == 3 and manifest["version"] == 1
+        assert manifest["files"][0]["kind"] == "version-file"
         assert manifest["path"].endswith(f'-model-{model["id"]}')
 
 

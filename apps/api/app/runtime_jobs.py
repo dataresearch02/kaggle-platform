@@ -36,12 +36,18 @@ def resources():
 
 
 def prepare_permissions(work):
+    inputs = work / "input"
     for path in [work, *work.rglob("*")]:
+        # Attached inputs are copies of immutable versions: notebooks only read them.
+        read_only = inputs in path.parents and path.is_file() and not path.is_symlink()
         if kubernetes():
             # OpenShift assigns UIDs and the namespace's shared fsGroup. Do not chown.
-            path.chmod(0o2770 if path.is_dir() else 0o660)
-        elif os.geteuid() == 0:
-            os.chown(path, 10001, 10001)
+            path.chmod(0o2770 if path.is_dir() else 0o440 if read_only else 0o660)
+        else:
+            if os.geteuid() == 0:
+                os.chown(path, 10001, 10001)
+            if read_only:
+                path.chmod(0o440)
 
 
 def gpu_count(gpus=None):

@@ -50,9 +50,14 @@ async def prepare_inputs(db, user, hub, folder, document):
     for item in document.get("metadata", {}).get("arena_input_sources", []):
         await materialize(db, user, hub, folder, item)
     await mkdir(user, hub, folder)
+    from .file_store import primary_path
+
     for item in document.get("metadata", {}).get("arena_inputs", []):
         dataset = readable(db, item["id"], user)
-        content = (DATA_DIR / "uploads" / dataset.storage_key).read_bytes()
+        source = primary_path(db, dataset)
+        if not source:
+            continue  # The latest version has no CSV file.
+        content = source.read_bytes()
         await hub.request(
             "PUT",
             endpoint(user, f"{folder}/arena-input-{dataset.id}.csv"),
