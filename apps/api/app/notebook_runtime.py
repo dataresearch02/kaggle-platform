@@ -244,7 +244,8 @@ async def ensure_server(user, hub, db=None, accelerator=None):
         response = await hub.request(
             "POST",
             f"/users/{name}/server",
-            json={"user_options": {"accelerator": accelerator}},
+            # The Hub REST API takes the request body itself as user_options.
+            json={"accelerator": accelerator},
         )
         # 400 can indicate another request already started the default server.
         if response.status_code == 400:

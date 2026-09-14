@@ -92,7 +92,7 @@ def test_gpu_sessions_pass_accelerator_and_track_usage(member, hub, gpu_site):
     assert member.post("/api/notebook-session", json={"accelerator": "gpu"}).json() == {
         "state": "starting"
     }
-    assert server_options(hub) == {"user_options": {"accelerator": "gpu"}}
+    assert server_options(hub) == {"accelerator": "gpu"}
     usage = member.get("/api/compute/usage").json()
     assert usage["in_use"] == 1 and usage["session_accelerator"] == "gpu"
     hub.states[2] = "ready"
@@ -111,7 +111,7 @@ def test_gpu_sessions_pass_accelerator_and_track_usage(member, hub, gpu_site):
         member.post("/api/notebook-session", json={"accelerator": "cpu"}).status_code
         == 200
     )
-    assert server_options(hub) == {"user_options": {"accelerator": "cpu"}}
+    assert server_options(hub) == {"accelerator": "cpu"}
 
     become(member, "learner")
     assert member.delete("/api/notebook-session").json() == {"state": "stopped"}
