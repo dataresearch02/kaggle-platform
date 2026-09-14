@@ -25,7 +25,10 @@ def test_imported_collection_and_real_submissions(member, tmp_path, monkeypatch)
         assert again["competitions"] == result["competitions"]
         for competition_id in result["competitions"]:
             base = f"/api/competitions/{competition_id}"
-            assert member.post(base + "/join").status_code == 200
+            assert (
+                member.post(base + "/join", json={"accept_rules": True}).status_code
+                == 200
+            )
             data = member.get(base + "/data").json()
             assert data["rows"] in (30, 69)
             assert len(member.get(base + "/discussion").json()) == 2
@@ -41,7 +44,10 @@ def test_imported_collection_and_real_submissions(member, tmp_path, monkeypatch)
                 else "penguins-submission.csv"
             )
             content = (tmp_path / filename).read_bytes()
-            assert member.post(base + "/join").status_code == 200
+            assert (
+                member.post(base + "/join", json={"accept_rules": True}).status_code
+                == 200
+            )
             response = member.post(
                 base + "/submissions", files={"file": (filename, content, "text/csv")}
             )

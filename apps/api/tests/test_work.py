@@ -135,7 +135,7 @@ def test_delete_work_checks_owner_and_removes_related_records(member):
         ("competitions", challenge["id"]),
         ("benchmarks", benchmark["id"]),
     ]:
-        member.post(f"/api/{kind}/{id}/join")
+        member.post(f"/api/{kind}/{id}/join", json={"accept_rules": True})
         member.post(
             f"/api/{kind}/{id}/submissions",
             files={"file": ("predictions.csv", "id,prediction\na,123.45\nb,678.9\n")},

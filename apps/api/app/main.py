@@ -9,7 +9,7 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import (
     Depends,
@@ -22,6 +22,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, JSONResponse, Response
+from pydantic import BaseModel
 from sqlalchemy import delete, func, select, text, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DBSession
@@ -56,7 +57,9 @@ from .models import (
     Progress,
     Session,
     Submission,
+    SubmissionTeam,
     User,
+    now,
 )
 from .schemas import (
     CommentInput,
@@ -95,7 +98,14 @@ from .notebook_drafts import user_lock
 from .notebook_editor import router as editor_router
 from .notebook_drafts import router as draft_router, cleanup_drafts
 from .challenges import validate_challenge
-from .scoring import score_csv
+from .scoring import (
+    DEFAULT_K,
+    assign_usage,
+    evaluate,
+    get_metric,
+    storable,
+    validate_split,
+)
 from .seed import seed
 from .notebook_runtime import router as notebook_router, notebook_document
 
@@ -178,6 +188,11 @@ from .models import DatasetAccess, DatasetShare
 app.include_router(access_router)
 app.include_router(version_router)
 app.include_router(team_router)
+from .competition_host import router as host_router
+from .competition_results import router as results_router
+
+app.include_router(host_router)
+app.include_router(results_router)
 app.include_router(engagement_router)
 from .accounts import router as account_router
 from .auth import has_usable_password
@@ -250,8 +265,10 @@ def public(obj, db=None):
         result["code"] = published_code(db, obj)
     if db and isinstance(obj, Competition):
         from .models import CompetitionSource
+        from .competition_policy import has_private_split, metric_info
 
         result["evaluation_available"] = bool(json.loads(obj.solution))
+        result.update(metric_info(obj), leaderboard_split=has_private_split(obj))
         if obj.deadline.startswith("9999-"):
             result["deadline"] = None  # Practice competitions have no deadline.
         source = db.get(CompetitionSource, obj.id)
@@ -273,6 +290,8 @@ def public(obj, db=None):
             )
             if details.kind == "benchmark":
                 result["deadline"] = None
+        if result["deadline"] is None:  # Without a deadline there is no timeline.
+            result.update(entry_deadline=None, merger_deadline=None)
     return result
 
 
@@ -619,7 +638,13 @@ async def create_challenge(
     description: str = Form(min_length=3, max_length=5000),
     category: str = Form(default="Regression", min_length=1, max_length=80),
     prize: str = Form(default="Knowledge", max_length=80),
-    metric: Literal["RMSE", "MAE", "Accuracy", "LogLoss"] = Form(default="RMSE"),
+    metric: str = Form(default="RMSE", max_length=30),
+    metric_k: Optional[int] = Form(default=None, ge=1, le=100),
+    # Share of answer rows on the public leaderboard when there is no Usage column.
+    public_fraction: Optional[float] = Form(default=None, gt=0, lt=1),
+    rules: str = Form(default="", max_length=50000),
+    max_daily_submissions: Optional[int] = Form(default=None, ge=1, le=100),
+    max_final_submissions: int = Form(default=2, ge=1, le=10),
     deadline: str = Form(default=""),
     test_file: UploadFile = File(),
     solution_file: UploadFile = File(),
@@ -632,6 +657,10 @@ async def create_challenge(
             403,
             "Only hosts and administrators can create competitions and benchmarks here",
         )
+    try:
+        chosen = get_metric(metric)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
     closes = datetime(9999, 1, 1, tzinfo=timezone.utc)
     if kind == "competition":
         try:
@@ -642,20 +671,30 @@ async def create_challenge(
             raise HTTPException(422, "Choose a future deadline including its timezone")
     test_content = await read_upload(test_file)
     answer_content = await read_upload(solution_file, 1024 * 1024)
+    k = (metric_k or DEFAULT_K) if chosen.uses_k else None
     try:
-        test_text, solution = validate_challenge(test_content, answer_content)
+        test_text, solution, usage = validate_challenge(
+            test_content, answer_content, chosen
+        )
+        if usage is None and public_fraction is not None:
+            usage = assign_usage(solution, public_fraction)
+        validate_split(solution, usage, chosen, k)
     except ValueError as exc:
         raise HTTPException(422, str(exc))
-    if metric == "LogLoss" and any(value not in (0, 1) for value in solution.values()):
-        raise HTTPException(422, "Binary log loss answers must be 0 or 1")
     obj = Competition(
         title=title,
         description=description,
         category=category,
         prize=prize,
-        metric=metric,
+        metric=chosen.name,
+        metric_k=k,
         deadline=closes.astimezone(timezone.utc).isoformat(),
-        solution=json.dumps(solution),
+        solution=json.dumps(storable(solution)),
+        solution_usage=json.dumps(usage or {}),
+        rules=rules,
+        max_daily_submissions=max_daily_submissions
+        or (5 if kind == "competition" else 20),
+        max_final_submissions=max_final_submissions,
     )
     db.add(obj)
     db.flush()
@@ -676,6 +715,10 @@ async def create_challenge(
 def competition(id: int, db: DBSession = Depends(get_db)):
     obj = require(db, Competition, id)
     from .team_scoring import leaderboard
+    from .competition_policy import timeline
+    from .competition_results import finalize_if_due
+
+    finalize_if_due(db, obj)
 
     template = db.scalar(
         select(CompetitionDataFile)
@@ -692,6 +735,7 @@ def competition(id: int, db: DBSession = Depends(get_db)):
             select(func.count()).select_from(Entry).where(Entry.competition_id == id)
         ),
         "leaderboard": leaderboard(db, obj),
+        "timeline": timeline(db, obj).json(),
         "submission_columns": (
             [column["name"] for column in json.loads(template.columns_json)]
             if template
@@ -705,30 +749,71 @@ def competition(id: int, db: DBSession = Depends(get_db)):
 def competition_leaderboard(
     id: int,
     response: Response,
+    board: Literal["public", "private"] = "public",
     pagination: Page = Depends(page),
+    user=Depends(optional_user),
     db: DBSession = Depends(get_db),
 ):
+    """Public scores while running; final private standings after the end."""
     from .team_scoring import leaderboard, leaderboard_size
 
     obj = require(db, Competition, id)
-    set_total(response, leaderboard_size(db, obj))
-    return leaderboard(db, obj, pagination.offset, pagination.limit)
+    if board == "public":
+        set_total(response, leaderboard_size(db, obj))
+        return leaderboard(db, obj, pagination.offset, pagination.limit)
+    from .competition_policy import reveal_private
+    from .competition_results import board_rows, finalize_if_due
+
+    finalize_if_due(db, obj)
+    if not reveal_private(db, obj, user):
+        raise HTTPException(
+            403, "The private leaderboard is published when the competition ends"
+        )
+    rows = board_rows(db, obj, "private")
+    set_total(response, len(rows))
+    return pagination.slice(rows)
+
+
+class JoinInput(BaseModel):
+    accept_rules: bool = False
+    # The revision the participant read; a newer one must be reviewed first.
+    rules_revision: Optional[int] = None
 
 
 @app.post("/api/benchmarks/{id}/join")
 @app.post("/api/competitions/{id}/join")
-def join(id: int, user: User = Depends(current_user), db: DBSession = Depends(get_db)):
-    obj = require(db, Competition, id)
+def join(
+    id: int,
+    data: Optional[JoinInput] = None,
+    user: User = Depends(current_user),
+    db: DBSession = Depends(get_db),
+):
+    """Join, or accept updated rules as an existing member."""
+    from .competition_policy import entry_for, timeline
+
+    obj = db.scalar(select(Competition).where(Competition.id == id).with_for_update())
+    if not obj:
+        raise HTTPException(404, "Not found")
     if datetime.fromisoformat(obj.deadline) < datetime.now(timezone.utc):
         raise HTTPException(409, "Competition has closed")
-    if not db.scalar(
-        select(Entry).where(Entry.user_id == user.id, Entry.competition_id == id)
-    ):
-        db.add(Entry(user_id=user.id, competition_id=id))
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
+    if not data or not data.accept_rules:
+        raise HTTPException(422, "Accept the competition rules to join")
+    if data.rules_revision is not None and data.rules_revision != obj.rules_revision:
+        raise HTTPException(
+            409, "The rules were updated while you were reading them; review them again"
+        )
+    entry = entry_for(db, id, user)
+    if not entry:
+        if not timeline(db, obj).entry_open():
+            raise HTTPException(409, "The entry deadline has passed")
+        entry = Entry(user_id=user.id, competition_id=id)
+        db.add(entry)
+    if entry.rules_revision != obj.rules_revision:
+        entry.rules_revision, entry.rules_accepted_at = obj.rules_revision, now()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
     return {"joined": True}
 
 
@@ -794,23 +879,36 @@ async def submit(
     user: User = Depends(current_user),
     db: DBSession = Depends(get_db),
 ):
+    from .competition_policy import (
+        require_current_rules,
+        require_daily_capacity,
+        require_submission_window,
+        solution_usage,
+        store_predictions,
+        submission_json,
+    )
+
     obj = db.scalar(select(Competition).where(Competition.id == id).with_for_update())
     if not obj:
         raise HTTPException(404, "Competition not found")
-    if datetime.fromisoformat(obj.deadline) < datetime.now(timezone.utc):
-        raise HTTPException(409, "Competition has closed")
-    if not db.scalar(
-        select(Entry).where(Entry.user_id == user.id, Entry.competition_id == id)
-    ):
-        raise HTTPException(403, "Join the competition before submitting")
+    require_submission_window(db, obj)
+    require_current_rules(db, obj, user)
     if not json.loads(obj.solution):
         raise HTTPException(
             409,
             "Local scoring is unavailable: official evaluation answers were not imported",
         )
+    # Checked before scoring; rejected uploads do not use the allowance.
+    require_daily_capacity(db, obj, user)
     content = await read_upload(file, 1024 * 1024)
     try:
-        score = score_csv(content, json.loads(obj.solution), obj.metric)
+        score, private_score = evaluate(
+            content,
+            json.loads(obj.solution),
+            obj.metric,
+            solution_usage(obj),
+            obj.metric_k,
+        )
     except ValueError as exc:
         raise HTTPException(422, str(exc))
     submission = Submission(
@@ -818,13 +916,15 @@ async def submit(
         competition_id=id,
         filename=os.path.basename(file.filename or "submission.csv"),
         score=score,
+        private_score=private_score,
     )
     db.add(submission)
     from .team_scoring import attach_team
 
-    attach_team(db, submission)
+    team_id = attach_team(db, submission)
+    store_predictions(db, submission, content)
     db.commit()
-    return public(submission)
+    return submission_json(submission, False, team_id)
 
 
 @app.get("/api/benchmarks/{id}/submissions")
@@ -837,15 +937,23 @@ def my_submissions(
     db: DBSession = Depends(get_db),
 ):
     from .team_scoring import history_filter
+    from .competition_policy import reveal_private, submission_json
 
-    require(db, Competition, id)
-    query = select(Submission).where(
-        history_filter(db, id, user), Submission.competition_id == id
+    obj = require(db, Competition, id)
+    query = (
+        select(Submission, SubmissionTeam.team_id, User.username)
+        .join(User, User.id == Submission.user_id)
+        .outerjoin(SubmissionTeam, SubmissionTeam.submission_id == Submission.id)
+        .where(history_filter(db, id, user), Submission.competition_id == id)
     )
     set_total(response, count(db, query))
+    # Private scores stay hidden from participants until the competition ends.
+    reveal = reveal_private(db, obj, user)
     return [
-        public(row)
-        for row in db.scalars(window(query.order_by(Submission.id.desc()), pagination))
+        submission_json(row, reveal, team_id, username)
+        for row, team_id, username in db.execute(
+            window(query.order_by(Submission.id.desc()), pagination)
+        )
     ]
 
 
@@ -1366,8 +1474,22 @@ async def remove_work(kind, id, user, db, moderated=False):
             )
             db.add(task)
         elif kind in ("competitions", "benchmarks"):
-            from .models import SubmissionTeam
+            from .models import (
+                CompetitionDisqualification,
+                CompetitionResult,
+                SubmissionPrediction,
+            )
 
+            competition_submissions = select(Submission.id).where(
+                Submission.competition_id == id
+            )
+            db.execute(
+                delete(SubmissionPrediction).where(
+                    SubmissionPrediction.submission_id.in_(competition_submissions)
+                )
+            )
+            for model in (CompetitionDisqualification, CompetitionResult):
+                db.execute(delete(model).where(model.competition_id == id))
             db.execute(
                 delete(SubmissionTeam).where(
                     SubmissionTeam.submission_id.in_(

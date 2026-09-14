@@ -219,7 +219,7 @@ test('competition discussion posts support replies and reactions', async ({ page
     headers,
     data: { username: `discussion_replies_${Date.now()}`, password: 'browser-password-123' },
   });
-  await page.request.post('/api/competitions/1/join', { headers });
+  await page.request.post('/api/competitions/1/join', { headers, data: { accept_rules: true } });
   const title = `Conversation ${Date.now()}`;
   await page.request.post('/api/competitions/1/discussion', {
     headers,

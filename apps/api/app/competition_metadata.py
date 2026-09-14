@@ -72,6 +72,21 @@ def add_file(db, competition_id, path, role, content, **metadata):
     return row
 
 
+def evaluation_text(competition):
+    from .scoring import get_metric
+
+    try:
+        metric = get_metric(competition.metric)
+    except ValueError:
+        return competition.metric
+    return (
+        f"{metric.title} ({metric.display(competition.metric_k)}): "
+        f"`{metric.formula}`. {metric.direction.capitalize()} scores are better. "
+        "The public leaderboard uses your best public score; final standings use the "
+        "private scores of your selected final submissions."
+    )
+
+
 def initialize_competition(db, competition):
     if db.get(CompetitionOverview, competition.id):
         return
@@ -82,7 +97,7 @@ def initialize_competition(db, competition):
             starts_at=details.created_at if details else None,
             prize_details=competition.prize,
             getting_started="1. Join the competition and review the data dictionary.\n2. Download training and test data. Train and validate your model.\n3. Create a CSV with id,prediction columns.\n4. Upload predictions in Submissions before the deadline; your best score counts.",
-            evaluation=f"{competition.metric}. {'Higher' if competition.metric == 'Accuracy' else 'Lower'} scores are better. The leaderboard uses your best submission.",
+            evaluation=evaluation_text(competition),
             data_description="Review the file descriptions and column dictionary before training. Test labels are kept private.",
         )
     )

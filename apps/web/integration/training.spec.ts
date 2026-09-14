@@ -71,7 +71,7 @@ print('CHECKPOINTS_SURVIVED_SERVER_RECREATION')`);
         .getByLabel(/^Output cell /)
         .filter({ hasText: 'CHECKPOINTS_SURVIVED_SERVER_RECREATION' }),
     ).toBeVisible({ timeout: 60000 });
-    await page.request.post('/api/competitions/1/join', { headers });
+    await page.request.post('/api/competitions/1/join', { headers, data: { accept_rules: true } });
     const jobNotebook = await (
       await page.request.post('/api/notebooks', {
         headers,

@@ -89,8 +89,13 @@ def test_competition_submission_and_best_score(member):
         ).status_code
         == 403
     )
-    assert member.post("/api/competitions/1/join").json() == {"joined": True}
-    assert member.post("/api/competitions/1/join").status_code == 200
+    assert member.post(
+        "/api/competitions/1/join", json={"accept_rules": True}
+    ).json() == {"joined": True}
+    assert (
+        member.post("/api/competitions/1/join", json={"accept_rules": True}).status_code
+        == 200
+    )
     assert (
         member.post(
             "/api/competitions/1/submissions", files={"file": ("p.csv", content)}
@@ -198,7 +203,10 @@ def test_mutations_require_login(client):
         ).status_code
         == 401
     )
-    assert client.post("/api/competitions/1/join").status_code == 401
+    assert (
+        client.post("/api/competitions/1/join", json={"accept_rules": True}).status_code
+        == 401
+    )
     assert client.get("/api/competitions/999").status_code == 404
 
 

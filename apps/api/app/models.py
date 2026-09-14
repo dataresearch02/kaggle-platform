@@ -6,6 +6,7 @@ from sqlalchemy import (
     Text,
     Float,
     ForeignKey,
+    LargeBinary,
     UniqueConstraint,
 )
 from .db import Base
@@ -67,6 +68,22 @@ class Competition(Base):
     prize = Column(String(80), default="Knowledge")
     # Private per-id answer metadata such as Public/Private leaderboard usage.
     solution_usage = Column(Text, nullable=False, default="{}", server_default="{}")
+    # Host rules (Markdown); a material change bumps the revision to re-accept.
+    rules = Column(Text, nullable=False, default="", server_default="")
+    rules_revision = Column(Integer, nullable=False, default=1, server_default="1")
+    rules_updated_at = Column(String, nullable=True)
+    # Timeline; the start lives in competition_overviews and the end is `deadline`.
+    entry_deadline = Column(String, nullable=True)
+    merger_deadline = Column(String, nullable=True)
+    max_daily_submissions = Column(
+        Integer, nullable=False, default=5, server_default="5"
+    )
+    max_final_submissions = Column(
+        Integer, nullable=False, default=2, server_default="2"
+    )
+    # K for MAP@K; ignored by other metrics.
+    metric_k = Column(Integer, nullable=True)
+    finalized_at = Column(String, nullable=True)
 
 
 class Entry(Base):
@@ -75,6 +92,9 @@ class Entry(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     competition_id = Column(Integer, ForeignKey("competitions.id"), nullable=False)
+    # Accepted Competition.rules_revision; submitting requires the current one.
+    rules_revision = Column(Integer, nullable=True)
+    rules_accepted_at = Column(String, nullable=True)
 
 
 class Submission(Base):
@@ -83,6 +103,51 @@ class Submission(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     competition_id = Column(Integer, ForeignKey("competitions.id"), nullable=False)
     filename = Column(String(255), nullable=False)
+    # Public leaderboard score (all rows when the competition has no split).
+    score = Column(Float, nullable=False)
+    created_at = Column(String, default=now)
+    # Null without a private split or for legacy rows without stored predictions.
+    private_score = Column(Float, nullable=True)
+    final_selected = Column(Integer, nullable=False, default=0, server_default="0")
+
+
+class SubmissionPrediction(Base):
+    """Compressed original predictions, kept so submissions can be rescored."""
+
+    __tablename__ = "submission_predictions"
+    submission_id = Column(Integer, ForeignKey("submissions.id"), primary_key=True)
+    content = Column(LargeBinary, nullable=False)
+
+
+class CompetitionDisqualification(Base):
+    """A user (solo entry) or team excluded from leaderboards and medals."""
+
+    __tablename__ = "competition_disqualifications"
+    id = Column(Integer, primary_key=True)
+    competition_id = Column(
+        Integer, ForeignKey("competitions.id"), nullable=False, index=True
+    )
+    team_id = Column(Integer, ForeignKey("competition_teams.id"), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reason = Column(Text, nullable=False)
+    actor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(String, default=now)
+
+
+class CompetitionResult(Base):
+    """Final private-leaderboard placement per user; team results repeat per member."""
+
+    __tablename__ = "competition_results"
+    __table_args__ = (UniqueConstraint("competition_id", "user_id"),)
+    id = Column(Integer, primary_key=True)
+    competition_id = Column(
+        Integer, ForeignKey("competitions.id"), nullable=False, index=True
+    )
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    team_id = Column(Integer, nullable=True)
+    rank = Column(Integer, nullable=False)
+    team_count = Column(Integer, nullable=False)
+    medal = Column(String(10), nullable=True)
     score = Column(Float, nullable=False)
     created_at = Column(String, default=now)
 

@@ -14,12 +14,16 @@ export default function CompetitionTeam({
   user,
   joined,
   closed,
+  leavingClosed = closed,
   signIn,
 }: {
   id: number;
   user: User | null;
   joined: boolean;
+  /** Creating or joining a team is closed (entry or merger deadline). */
   closed: boolean;
+  /** Leaving a team is closed (merger deadline). */
+  leavingClosed?: boolean;
   signIn: () => void;
 }) {
   const [team, setTeam] = useState<Team | null>(null);
@@ -68,8 +72,9 @@ export default function CompetitionTeam({
       <h2>Team</h2>
       <p>
         Create a team or join teammates using their invite code. Predictions submitted by members
-        count toward the team leaderboard. Choose your team before submitting; membership changes
-        are locked after submission.
+        count toward the team leaderboard and share its daily submission limit and final selections.
+        Choose your team before submitting; membership changes are locked after submission and
+        close at the entry and team merger deadlines.
       </p>
       {error && <p role="alert">{error}</p>}
       {loading ? (
@@ -110,7 +115,7 @@ export default function CompetitionTeam({
               </tbody>
             </table>
           </div>
-          {closed ? (
+          {leavingClosed ? (
             <p>Team changes are closed.</p>
           ) : (
             <>

@@ -1,12 +1,12 @@
 """Competition-scoped teams with one team per participant."""
 
 import secrets
-from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .auth import current_user
+from .competition_policy import timeline
 from .db import get_db
 from .models import Competition, CompetitionTeam, CompetitionTeamMember, Entry, User
 
@@ -22,13 +22,15 @@ def membership(db, id, user):
     )
 
 
-def can_change(db, id, user):
+def can_change(db, id, user, forming=True):
+    """Creating or joining closes at the entry or merger deadline; leaving at merger."""
     competition = db.scalar(
         select(Competition).where(Competition.id == id).with_for_update()
     )
     if not competition:
         raise HTTPException(404, "Competition not found")
-    if datetime.fromisoformat(competition.deadline) < datetime.now(timezone.utc):
+    times = timeline(db, competition)
+    if not (times.team_forming_open() if forming else times.team_changes_open()):
         raise HTTPException(409, "Team changes are closed for this competition")
     if not db.scalar(
         select(Entry.id).where(Entry.competition_id == id, Entry.user_id == user.id)
@@ -141,7 +143,7 @@ def join_team(
 
 @router.delete("/{id}/team", status_code=204)
 def leave_team(id: int, user=Depends(current_user), db: Session = Depends(get_db)):
-    can_change(db, id, user)
+    can_change(db, id, user, forming=False)
     member = membership(db, id, user)
     if not member:
         return

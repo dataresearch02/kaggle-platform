@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { api, oidcLoginPath, ssoErrorMessage, type User } from './api';
+import { api, oidcLoginPath, ssoErrorMessage, type User, type CompetitionResult } from './api';
 import { Avatar, type Profile } from './AccountMenu';
+import { MedalBadge } from './CompetitionRules';
 import ModerationActions, { HiddenNotice } from './Moderation';
 
 type Token = {
@@ -61,6 +62,7 @@ export default function AccountPage({
   const publicView = route.startsWith('profile/');
   const section = route.split('/')[1];
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [results, setResults] = useState<CompetitionResult[]>([]);
   const [tokens, setTokens] = useState<Token[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [secret, setSecret] = useState('');
@@ -83,6 +85,15 @@ export default function AccountPage({
       setLoading(false);
       return;
     }
+    setResults([]);
+    if (publicView)
+      api<CompetitionResult[]>(`/profiles/${section}/competitions`)
+        .then((rows) => {
+          if (active) setResults(rows);
+        })
+        .catch(() => {
+          if (active) setResults([]);
+        });
     const request = publicView
       ? api<Profile>(`/profiles/${section}`).then((row) => {
           if (active) setProfile(row);
@@ -235,6 +246,45 @@ export default function AccountPage({
                 </p>
               )}
             </article>
+          )}
+          {publicView && profile && (
+            <section className="account-card profile-results">
+              <h2>Competition results</h2>
+              {results.length ? (
+                <div className="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Competition</th>
+                        <th>Final rank</th>
+                        <th>Medal</th>
+                        <th>Team</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {results.map((row) => (
+                        <tr key={row.competition_id}>
+                          <td>
+                            <a href={`#competitions/${row.competition_id}/leaderboard`}>
+                              {row.title}
+                            </a>
+                          </td>
+                          <td>
+                            #{row.rank} of {row.team_count}
+                          </td>
+                          <td>
+                            <MedalBadge medal={row.medal} />
+                          </td>
+                          <td>{row.team_name || 'Solo'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="muted">No final competition results yet.</p>
+              )}
+            </section>
           )}
           {!publicView && section === 'profile' && profile && (
             <div className="profile-edit-layout">

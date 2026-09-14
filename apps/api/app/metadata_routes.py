@@ -25,6 +25,7 @@ from .models import (
 )
 from .competition_metadata import add_file, ensure_profile, require_data_access
 from .permissions import can_manage
+from .competition_policy import metric_info, parse_time, set_timeline
 
 router = APIRouter(prefix="/api", tags=["Competition metadata"])
 
@@ -61,9 +62,23 @@ def overview_data(db, id):
             if (source and source.ongoing) or competition.deadline.startswith("9999-")
             else competition.deadline
         ),
+        "entry_deadline": (
+            None
+            if competition.deadline.startswith("9999-")
+            else competition.entry_deadline
+        ),
+        "merger_deadline": (
+            None
+            if competition.deadline.startswith("9999-")
+            else competition.merger_deadline
+        ),
+        "max_daily_submissions": competition.max_daily_submissions,
+        "max_final_submissions": competition.max_final_submissions,
+        "rules_revision": competition.rules_revision,
         "prize": competition.prize,
         "description": competition.description,
         "metric": competition.metric,
+        **metric_info(competition),
         "source_pages": json.loads(source.pages_json) if source else {},
     }
 
@@ -92,23 +107,20 @@ def update_overview(
     db: Session = Depends(get_db),
 ):
     competition = organizer(db, id, user)
-    if data.ends_at.tzinfo is None or (
-        data.starts_at
-        and (data.starts_at.tzinfo is None or data.starts_at >= data.ends_at)
-    ):
-        raise HTTPException(
-            422, "Use timezone-aware dates; the start must precede the deadline"
-        )
-    row = db.get(CompetitionOverview, id)
-    if not row:
-        row = CompetitionOverview(competition_id=id)
-        db.add(row)
+    # Entry and merger deadlines must still fall within the edited period.
+    row = set_timeline(
+        db,
+        competition,
+        data.starts_at,
+        parse_time(competition.entry_deadline),
+        parse_time(competition.merger_deadline),
+        data.ends_at,
+    )
     for key in ("prize_details", "getting_started", "evaluation", "data_description"):
         setattr(row, key, getattr(data, key))
-    row.starts_at = (
-        data.starts_at.astimezone(timezone.utc).isoformat() if data.starts_at else None
-    )
-    competition.deadline = data.ends_at.astimezone(timezone.utc).isoformat()
+    from .competition_results import refresh_results
+
+    refresh_results(db, competition, user)
     competition.prize = data.prize
     competition.description = data.description
     db.commit()

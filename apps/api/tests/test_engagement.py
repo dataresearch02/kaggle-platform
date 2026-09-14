@@ -28,7 +28,7 @@ def test_replies_and_reactions_are_persistent_scoped_and_owned(member, kind):
             f"/api/code/{notebook['id']}/comments", json={"body": "Original comment"}
         ).json()
     elif kind in ("competition-post", "competition-comment"):
-        member.post("/api/competitions/1/join")
+        member.post("/api/competitions/1/join", json={"accept_rules": True})
         target = member.post(
             "/api/competitions/1/discussion",
             json={"title": "Threaded post", "body": "Original post"},

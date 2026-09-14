@@ -45,6 +45,7 @@ import NotebookWorkspace from './NotebookWorkspace';
 import CreatePage from './CreatePage';
 import NewNotebook from './NewNotebook';
 import CompetitionPage, { competitionTabs, type CompetitionTab } from './CompetitionPage';
+import { RulesSummary } from './CompetitionRules';
 import YourWork, { type WorkItem, type WorkKind } from './YourWork';
 
 const PAGE_SIZE = 24;
@@ -1355,6 +1356,7 @@ function Detail({
   const [submissions, setSubmissions] = useState<{ id: number; filename: string; score: number }[]>(
     [],
   );
+  const [acceptRules, setAcceptRules] = useState(false);
   useEffect(() => {
     let active = true;
     if (page === 'courses' && user)
@@ -1450,7 +1452,8 @@ function Detail({
         <>
           <div className="pill-row">
             <span>
-              {item.metric} · {item.metric === 'Accuracy' ? 'higher' : 'lower'} is better
+              {item.metric_label || item.metric} ·{' '}
+              {item.metric_direction === 'higher' ? 'higher' : 'lower'} is better
             </span>
             <span>{item.participants} participants</span>
             <span>
@@ -1461,13 +1464,31 @@ function Detail({
                   : 'No deadline'}
             </span>
           </div>
+          <details className="detail-rules">
+            <summary>Rules (revision {item.rules_revision ?? 1})</summary>
+            <RulesSummary item={item} hostRules />
+          </details>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={acceptRules}
+              onChange={(event) => setAcceptRules(event.target.checked)}
+            />
+            I have read and accept the rules
+          </label>
           <div className="button-row">
             <button
               className="button"
-              disabled={busy}
+              disabled={busy || !acceptRules}
               onClick={() =>
                 act(async () => {
-                  await api(`/${page}/${item.id}/join`, { method: 'POST' });
+                  await api(`/${page}/${item.id}/join`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      accept_rules: true,
+                      rules_revision: item.rules_revision,
+                    }),
+                  });
                   setItem(await api(`/${page}/${item.id}`));
                   changed(
                     page === 'benchmarks'
@@ -1497,7 +1518,9 @@ function Detail({
                 });
                 setItem(await api(`/${page}/${item.id}`));
                 setSubmissions(await api(`/${page}/${item.id}/submissions`));
-                changed(`Submission scored: ${result.score.toFixed(4)} ${item.metric}`);
+                changed(
+                  `Submission scored: ${result.score.toFixed(4)} ${item.metric_label || item.metric}`,
+                );
               });
             }}
           >
@@ -1516,7 +1539,7 @@ function Detail({
                 <tr>
                   <th>Rank</th>
                   <th>Participant</th>
-                  <th>Best {item.metric}</th>
+                  <th>Best {item.metric_label || item.metric}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1539,7 +1562,7 @@ function Detail({
                 <thead>
                   <tr>
                     <th>File</th>
-                    <th>{item.metric}</th>
+                    <th>{item.metric_label || item.metric}</th>
                   </tr>
                 </thead>
                 <tbody>

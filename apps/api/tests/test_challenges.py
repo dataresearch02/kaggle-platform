@@ -49,7 +49,10 @@ def test_creator_can_publish_and_participant_can_score(member, kind):
         "/api/auth/register",
         json={"username": "participant", "password": "participant-password"},
     )
-    assert member.post(f"/api/{kind}/{id}/join").status_code == 200
+    assert (
+        member.post(f"/api/{kind}/{id}/join", json={"accept_rules": True}).status_code
+        == 200
+    )
     result = member.post(
         f"/api/{kind}/{id}/submissions",
         files={"file": ("predictions.csv", "id,prediction\na,123.45\nb,678.9\n")},

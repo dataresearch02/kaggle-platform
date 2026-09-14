@@ -32,7 +32,7 @@ from .notebook_editor import Document, contents
 from .notebook_runtime import HubClient, hub_username, start_session
 from .code_pages import store_publication
 from .kernel_channels import wait_for_kernel
-from .scoring import score_csv
+from .scoring import evaluate
 
 router = APIRouter(prefix="/api/code", tags=["Competition commits"])
 
@@ -48,8 +48,9 @@ def eligible(db, notebook_id, competition_id, user):
     )
     if not competition:
         raise HTTPException(404, "Competition not found")
-    if datetime.fromisoformat(competition.deadline) < datetime.now(timezone.utc):
-        raise HTTPException(409, "Competition has closed")
+    from .competition_policy import require_submission_window
+
+    require_submission_window(db, competition)
     if not db.scalar(
         select(Entry.id).where(
             Entry.user_id == user.id, Entry.competition_id == competition_id
@@ -90,7 +91,10 @@ def create_commit(
     user=Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    notebook, _ = eligible(db, id, data.competition_id, user)
+    notebook, competition = eligible(db, id, data.competition_id, user)
+    from .competition_policy import require_current_rules, require_daily_capacity
+
+    require_current_rules(db, competition, user, "committing code")
     active = db.scalar(
         select(NotebookCommit).where(
             NotebookCommit.notebook_id == id,
@@ -99,6 +103,8 @@ def create_commit(
     )
     if active:
         raise HTTPException(409, "This notebook already has a commit in progress")
+    # Queued commits count toward the daily limit until they finish.
+    require_daily_capacity(db, competition, user)
     working = db.get(NotebookWorkingCopy, id)
     if not working:
         raise HTTPException(409, "Save the notebook in the editor before committing")
@@ -369,8 +375,14 @@ def complete_commit(job_id, document, predictions, output_files=None):
             return
         user = db.get(User, job.owner_id)
         notebook, competition = eligible(db, job.notebook_id, job.competition_id, user)
-        score = score_csv(
-            predictions, json.loads(competition.solution), competition.metric
+        from .competition_policy import solution_usage, store_predictions
+
+        score, private_score = evaluate(
+            predictions,
+            json.loads(competition.solution),
+            competition.metric,
+            solution_usage(competition),
+            competition.metric_k,
         )
         store_publication(db, notebook, Document.model_validate(document))
         from .notebook_publishers import record_publisher
@@ -400,11 +412,13 @@ def complete_commit(job_id, document, predictions, output_files=None):
             competition_id=competition.id,
             filename=job.output_filename,
             score=score,
+            private_score=private_score,
         )
         db.add(submission)
         from .team_scoring import attach_team
 
         attach_team(db, submission)
+        store_predictions(db, submission, predictions)
         if output_files is not None:
             from .notebook_files import capture_completed_job
 

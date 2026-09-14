@@ -65,8 +65,97 @@ export type Item = {
   url?: string;
   preview?: Record<string, string>[];
   participants?: number;
-  leaderboard?: { rank: number; username: string; score: number }[];
+  leaderboard?: LeaderboardRow[];
+  /** Registry label (for example MAP@5) and whether higher or lower scores win. */
+  metric_label?: string;
+  metric_direction?: 'higher' | 'lower';
+  metric_k?: number | null;
+  rules?: string;
+  rules_revision?: number;
+  entry_deadline?: string | null;
+  merger_deadline?: string | null;
+  max_daily_submissions?: number;
+  max_final_submissions?: number;
+  /** True when answers are split into public and private leaderboard rows. */
+  leaderboard_split?: boolean;
+  finalized_at?: string | null;
+  timeline?: Timeline;
 };
+export type MetricInfo = {
+  name: string;
+  label: string;
+  title: string;
+  direction: 'higher' | 'lower';
+  formula: string;
+  input: string;
+  uses_k: boolean;
+};
+export type Timeline = {
+  starts_at: string | null;
+  entry_deadline: string | null;
+  merger_deadline: string | null;
+  ends_at: string | null;
+  started: boolean;
+  entry_open: boolean;
+  team_forming_open: boolean;
+  team_changes_open: boolean;
+  ended: boolean;
+};
+export type Membership = {
+  joined: boolean;
+  rules_revision: number;
+  accepted_rules_revision: number | null;
+  rules_accepted_at: string | null;
+  needs_rules_acceptance: boolean;
+  team_id: number | null;
+  submissions_today: number;
+  max_daily_submissions: number;
+  remaining_submissions_today: number;
+  max_final_submissions: number;
+  final_selected: number;
+  can_host: boolean;
+  timeline: Timeline;
+};
+export type SubmissionRow = {
+  id: number;
+  user_id: number;
+  filename: string;
+  score: number;
+  /** Present only after the end, or for hosts. */
+  private_score?: number | null;
+  created_at: string;
+  final_selected: boolean;
+  team_id: number | null;
+  submitter?: string;
+  team_name?: string | null;
+  has_predictions?: boolean;
+  disqualified?: boolean;
+};
+export type Medal = 'gold' | 'silver' | 'bronze';
+export type LeaderboardRow = {
+  rank: number;
+  username: string;
+  score: number;
+  team_id?: number;
+  entries?: number;
+  public_rank?: number | null;
+  medal?: Medal | null;
+  automatic_selection?: boolean;
+};
+export type CompetitionResult = {
+  competition_id: number;
+  title: string;
+  rank: number;
+  team_count: number;
+  medal: Medal | null;
+  score: number;
+  team_id: number | null;
+  team_name: string | null;
+  finalized_at: string;
+};
+export function formatScore(value: number | null | undefined) {
+  return value === null || value === undefined ? '—' : value.toFixed(4);
+}
 async function request(path: string, init: RequestInit = {}) {
   const response = await fetch(`/api${path}`, {
     ...init,

@@ -3,7 +3,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.migrations import MIGRATIONS, run_migrations
-from app.models import Competition, SchemaMigration, User
+from app.models import Competition, Entry, SchemaMigration, Submission, User
 
 OLD_SCHEMA = [
     """CREATE TABLE users (
@@ -39,10 +39,28 @@ OLD_SCHEMA = [
         user_id INTEGER NOT NULL,
         expires_at FLOAT NOT NULL
     )""",
+    """CREATE TABLE entries (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        competition_id INTEGER NOT NULL
+    )""",
+    """CREATE TABLE submissions (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        competition_id INTEGER NOT NULL,
+        filename VARCHAR(255) NOT NULL,
+        score FLOAT NOT NULL,
+        created_at VARCHAR
+    )""",
     "INSERT INTO users (id, username, password_hash) VALUES (1, 'veteran', 'x:y')",
     "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ('old', 1, 1.0)",
     "INSERT INTO competitions (id, title, description, deadline, solution)"
     " VALUES (1, 'Old', 'Kept', '2030-01-01T00:00:00+00:00', '{\"1\": 2}')",
+    "INSERT INTO competitions (id, title, description, deadline, solution)"
+    " VALUES (2, 'Practice', 'Kept', '9999-12-31T23:59:59+00:00', '{\"1\": 2}')",
+    "INSERT INTO entries (id, user_id, competition_id) VALUES (1, 1, 1)",
+    "INSERT INTO submissions (id, user_id, competition_id, filename, score)"
+    " VALUES (1, 1, 1, 'old.csv', 0.5)",
     "INSERT INTO datasets (id, owner_id, title, description, filename, storage_key)"
     " VALUES (1, 1, 'Data', 'Kept', 'a.csv', 'a.csv')",
 ]
@@ -78,6 +96,18 @@ def test_migrations_upgrade_an_old_schema_and_are_idempotent():
         competition = db.get(Competition, 1)
         assert competition.description == "Kept"
         assert competition.solution_usage == "{}"
+        assert (competition.rules_revision, competition.max_daily_submissions) == (1, 5)
+        assert (
+            competition.max_final_submissions == 2 and competition.finalized_at is None
+        )
+        assert db.get(Competition, 2).max_daily_submissions == 20
+        # Existing participants count as having accepted the current rules.
+        entry = db.get(Entry, 1)
+        assert entry.rules_revision == 1 and entry.rules_accepted_at
+        # Legacy scores stay public; private scores are empty until rescored.
+        submission = db.get(Submission, 1)
+        assert (submission.score, submission.private_score) == (0.5, None)
+        assert submission.final_selected == 0
         assert len(db.scalars(select(SchemaMigration)).all()) == len(MIGRATIONS)
         # Losing the receipts must not re-add existing columns.
         db.execute(SchemaMigration.__table__.delete())

@@ -8,7 +8,7 @@ test('competition forks remain private until a fresh run produces valid predicti
     headers,
     data: { username: `commit_test_${Date.now()}`, password: 'commit-workflow-password' },
   });
-  await page.request.post('/api/competitions/1/join', { headers });
+  await page.request.post('/api/competitions/1/join', { headers, data: { accept_rules: true } });
   let id = 0;
   try {
     await page.goto('/#code/1?competition=1');

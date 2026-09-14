@@ -95,6 +95,8 @@ The UI shows **Report** on discussion topics and comments, replies, code pages, 
 | `content.update` | An admin edits another user's work title or description |
 | `report.resolve` | A report is resolved, with the note |
 | `competition.create`, `competition.delete` | Any competition or CSV benchmark creation or deletion |
+| `competition.settings`, `competition.rules`, `competition.solution`, `competition.rescore` | Host changes to the timeline, limits, metric, rules, answers, and rescoring ([competitions](competitions.md)) |
+| `competition.disqualify`, `competition.reinstate`, `competition.finalize` | Disqualifying or reinstating a user or team, and storing final ranks and medals (the system is the actor for automatic finalization) |
 
 ## Pagination
 

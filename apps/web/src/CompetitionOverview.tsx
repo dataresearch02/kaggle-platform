@@ -13,6 +13,12 @@ export type Overview = {
   evaluation: string;
   data_description: string;
   metric: string;
+  metric_label?: string;
+  metric_direction?: 'higher' | 'lower';
+  entry_deadline?: string | null;
+  merger_deadline?: string | null;
+  max_daily_submissions?: number;
+  max_final_submissions?: number;
 };
 const localDate = (value: string | null) => {
   if (!value) return '';
@@ -91,7 +97,10 @@ export default function CompetitionOverview({
             }
           }}
         >
-          <p>Dates use your local timezone. The end date is also the submission deadline.</p>
+          <p>
+            Dates use your local timezone. The end date is also the submission deadline. Edit entry
+            and team merger deadlines in Host tools.
+          </p>
           <div className="metadata-two-columns">
             <label>
               Start date
@@ -145,16 +154,38 @@ export default function CompetitionOverview({
           <p className="competition-description">{data.description}</p>
           <div className="competition-overview-grid">
             <section>
-              <h3>Competition period</h3>
+              <h3>Timeline</h3>
+              {data.ends_at ? (
+                <dl className="metadata-facts">
+                  <dt>Start</dt>
+                  <dd>
+                    {data.starts_at
+                      ? new Date(data.starts_at).toLocaleString()
+                      : 'Start date not specified'}
+                  </dd>
+                  <dt>Entry deadline</dt>
+                  <dd>
+                    {data.entry_deadline
+                      ? new Date(data.entry_deadline).toLocaleString()
+                      : 'Until the end'}
+                  </dd>
+                  <dt>Team merger deadline</dt>
+                  <dd>
+                    {data.merger_deadline
+                      ? new Date(data.merger_deadline).toLocaleString()
+                      : 'Until the end'}
+                  </dd>
+                  <dt>Final submission deadline</dt>
+                  <dd>{new Date(data.ends_at).toLocaleString()}</dd>
+                </dl>
+              ) : (
+                <p>Ongoing: no deadlines, final ranking or medals.</p>
+              )}
               <dl className="metadata-facts">
-                <dt>Starts</dt>
-                <dd>
-                  {data.starts_at
-                    ? new Date(data.starts_at).toLocaleString()
-                    : 'Start date not specified'}
-                </dd>
-                <dt>Submission deadline</dt>
-                <dd>{data.ends_at ? new Date(data.ends_at).toLocaleString() : 'Ongoing'}</dd>
+                <dt>Daily submissions</dt>
+                <dd>{data.max_daily_submissions ?? 5} per team or participant (UTC day)</dd>
+                <dt>Final submissions</dt>
+                <dd>Up to {data.max_final_submissions ?? 2}</dd>
               </dl>
             </section>
             <section>
@@ -173,7 +204,10 @@ export default function CompetitionOverview({
             </Markdown>
           </section>
           <section>
-            <h3>Evaluation · {data.metric}</h3>
+            <h3>
+              Evaluation · {data.metric_label || data.metric}
+              {data.metric_direction ? ` (${data.metric_direction} is better)` : ''}
+            </h3>
             <Markdown>{data.evaluation}</Markdown>
           </section>
           {data.source_pages?.['frequently asked questions'] && (

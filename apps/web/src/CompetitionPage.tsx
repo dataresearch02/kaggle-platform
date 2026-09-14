@@ -4,10 +4,21 @@ import Markdown from './Markdown';
 import CompetitionTeam from './CompetitionTeam';
 import { useEffect, useState } from 'react';
 import { ArrowLeft, Trophy, Users, Calendar, Check } from 'lucide-react';
-import { api, apiPage, type Item, type User } from './api';
+import {
+  api,
+  apiPage,
+  formatScore,
+  type Item,
+  type LeaderboardRow,
+  type Membership,
+  type SubmissionRow,
+  type User,
+} from './api';
 import CodeList from './CodeList';
 import CompetitionOverview from './CompetitionOverview';
 import CompetitionData from './CompetitionData';
+import CompetitionHost from './CompetitionHost';
+import { JoinRulesDialog, MedalBadge, RankChange, RulesSummary } from './CompetitionRules';
 import type { WorkItem } from './YourWork';
 
 export const competitionTabs = [
@@ -20,10 +31,9 @@ export const competitionTabs = [
   'rules',
   'team',
   'submissions',
+  'host',
 ] as const;
 export type CompetitionTab = (typeof competitionTabs)[number];
-type Submission = { id: number; filename: string; score: number; created_at: string };
-type LeaderboardRow = NonNullable<Item['leaderboard']>[number];
 const PAGE_SIZE = 50;
 export default function CompetitionPage({
   id,
@@ -43,13 +53,15 @@ export default function CompetitionPage({
   back: () => void;
 }) {
   const [item, setItem] = useState<Item | null>(null);
-  const [joined, setJoined] = useState(false);
-  const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [membership, setMembership] = useState<Membership | null>(null);
+  const [submissions, setSubmissions] = useState<SubmissionRow[]>([]);
   const [submissionTotal, setSubmissionTotal] = useState(0);
+  const [boardKind, setBoardKind] = useState<'public' | 'private'>('public');
   const [board, setBoard] = useState<{ items: LeaderboardRow[]; total: number }>({
     items: [],
     total: 0,
   });
+  const [rulesOpen, setRulesOpen] = useState(false);
   const [resources, setResources] = useState<Item[]>([]);
   const [owned, setOwned] = useState<WorkItem[]>([]);
   const [resourceId, setResourceId] = useState('');
@@ -63,23 +75,19 @@ export default function CompetitionPage({
   useEffect(() => {
     let alive = true;
     setError('');
-    setJoined(false);
-    setSubmissions([]);
     Promise.all([
       api<Item>(base),
-      user ? api<{ joined: boolean }>(`${base}/membership`) : Promise.resolve({ joined: false }),
+      user ? api<Membership>(`${base}/membership`) : Promise.resolve(null),
       user
-        ? apiPage<Submission>(`${base}/submissions?limit=${PAGE_SIZE}`)
+        ? apiPage<SubmissionRow>(`${base}/submissions?limit=${PAGE_SIZE}`)
         : Promise.resolve({ items: [], total: 0 }),
-      apiPage<LeaderboardRow>(`${base}/leaderboard?limit=${PAGE_SIZE}`),
     ])
-      .then(([competition, member, results, leaders]) => {
+      .then(([competition, member, results]) => {
         if (alive) {
           setItem(competition);
-          setJoined(member.joined);
+          setMembership(member);
           setSubmissions(results.items);
           setSubmissionTotal(results.total);
-          setBoard(leaders);
         }
       })
       .catch((e) => {
@@ -92,6 +100,26 @@ export default function CompetitionPage({
       alive = false;
     };
   }, [id, user?.id, revision]);
+  const ended = !!item?.timeline?.ended;
+  // Private standings are public after the end; hosts may preview them earlier.
+  const privateVisible = ended || !!membership?.can_host;
+  const boardView = boardKind === 'private' && privateVisible ? 'private' : 'public';
+  useEffect(() => {
+    if (ended) setBoardKind('private');
+  }, [ended]);
+  useEffect(() => {
+    let alive = true;
+    apiPage<LeaderboardRow>(`${base}/leaderboard?board=${boardView}&limit=${PAGE_SIZE}`)
+      .then((rows) => {
+        if (alive) setBoard(rows);
+      })
+      .catch((e) => {
+        if (alive) setError(e.message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id, boardView, user?.id, revision]);
   useEffect(() => {
     let alive = true;
     setResources([]);
@@ -127,11 +155,11 @@ export default function CompetitionPage({
     try {
       if (kind === 'leaderboard') {
         const next = await apiPage<LeaderboardRow>(
-          `${base}/leaderboard?offset=${board.items.length}&limit=${PAGE_SIZE}`,
+          `${base}/leaderboard?board=${boardView}&offset=${board.items.length}&limit=${PAGE_SIZE}`,
         );
         setBoard((old) => ({ items: [...old.items, ...next.items], total: next.total }));
       } else {
-        const next = await apiPage<Submission>(
+        const next = await apiPage<SubmissionRow>(
           `${base}/submissions?offset=${submissions.length}&limit=${PAGE_SIZE}`,
         );
         setSubmissions((old) => [...old, ...next.items]);
@@ -169,7 +197,20 @@ export default function CompetitionPage({
         </button>
       </section>
     );
-  const closed = !!item.deadline && new Date(item.deadline).getTime() <= Date.now();
+  const timeline = item.timeline;
+  const closed = timeline
+    ? timeline.ended
+    : !!item.deadline && new Date(item.deadline).getTime() <= Date.now();
+  const joined = !!membership?.joined;
+  const needsRules = !!membership?.needs_rules_acceptance && !closed;
+  const canHost = !!membership?.can_host;
+  const entryClosed = !!timeline && !timeline.entry_open;
+  const label = item.metric_label || item.metric || 'Score';
+  const direction = item.metric_direction === 'higher' ? 'higher' : 'lower';
+  const finalLimit = membership?.max_final_submissions ?? item.max_final_submissions ?? 2;
+  const finalCount = membership?.final_selected ?? 0;
+  const showPrivate = submissions.some((row) => row.private_score !== undefined);
+  const remaining = membership?.remaining_submissions_today ?? 0;
   return (
     <article className="competition-page">
       <button className="text-button competition-back" onClick={back}>
@@ -185,17 +226,19 @@ export default function CompetitionPage({
         </div>
         <button
           className="button"
-          disabled={busy || joined || closed}
-          onClick={() =>
-            void act(async () => {
-              await api(`${base}/join`, { method: 'POST' });
-              setJoined(true);
-              setNotice('You joined the competition');
-            })
-          }
+          disabled={busy || closed || (joined && !needsRules) || (!joined && entryClosed)}
+          onClick={() => (user ? setRulesOpen(true) : signIn())}
         >
-          {joined ? <Check size={17} /> : <Trophy size={17} />}
-          {joined ? 'Joined' : closed ? 'Competition closed' : 'Join competition'}
+          {joined && !needsRules ? <Check size={17} /> : <Trophy size={17} />}
+          {needsRules
+            ? 'Review updated rules'
+            : joined
+              ? 'Joined'
+              : closed
+                ? 'Competition closed'
+                : entryClosed
+                  ? 'Entry deadline passed'
+                  : 'Join competition'}
         </button>
       </header>
       <div className="competition-facts">
@@ -212,25 +255,38 @@ export default function CompetitionPage({
           {item.deadline ? `Closes ${new Date(item.deadline).toLocaleString()}` : 'No deadline'}
         </span>
         <span>
-          {item.metric} · {item.metric === 'Accuracy' ? 'higher' : 'lower'} is better
+          {label} · {direction} is better
         </span>
       </div>
       <nav className="competition-tabs" aria-label="Competition sections">
-        {competitionTabs.map((name) => (
-          <a
-            key={name}
-            href={`#competitions/${id}/${name}`}
-            aria-current={tab === name ? 'page' : undefined}
-            onClick={(event) => {
-              event.preventDefault();
-              setTab(name);
-            }}
-          >
-            {name === 'code' ? 'Code' : name[0].toUpperCase() + name.slice(1)}
-          </a>
-        ))}
+        {competitionTabs
+          .filter((name) => name !== 'host' || canHost)
+          .map((name) => (
+            <a
+              key={name}
+              href={`#competitions/${id}/${name}`}
+              aria-current={tab === name ? 'page' : undefined}
+              onClick={(event) => {
+                event.preventDefault();
+                setTab(name);
+              }}
+            >
+              {name === 'code' ? 'Code' : name[0].toUpperCase() + name.slice(1)}
+            </a>
+          ))}
       </nav>
-      {error && (
+      {needsRules && (
+        <div className="competition-warning" role="alert">
+          <span>
+            The host updated the rules (revision {membership?.rules_revision}). Accept them again
+            before submitting or committing code.
+          </span>
+          <button className="button secondary" onClick={() => setRulesOpen(true)}>
+            Review rules
+          </button>
+        </div>
+      )}
+      {error && !rulesOpen && (
         <p className="error" role="alert">
           {error}
         </p>
@@ -351,39 +407,84 @@ export default function CompetitionPage({
           ))}
         {tab === 'leaderboard' && (
           <>
-            <h2>Leaderboard</h2>
+            <div className="metadata-heading">
+              <h2>Leaderboard</h2>
+              <div className="segmented" role="group" aria-label="Leaderboard">
+                <button
+                  aria-pressed={boardView === 'public'}
+                  onClick={() => setBoardKind('public')}
+                >
+                  Public
+                </button>
+                <button
+                  aria-pressed={boardView === 'private'}
+                  disabled={!privateVisible}
+                  title={privateVisible ? undefined : 'Published when the competition ends'}
+                  onClick={() => setBoardKind('private')}
+                >
+                  {ended ? 'Private (final)' : 'Private'}
+                </button>
+              </div>
+            </div>
+            <p className="muted">
+              {boardView === 'public'
+                ? item.leaderboard_split
+                  ? 'Best scores on the public test rows. Final standings use the private rows and are published when the competition ends.'
+                  : 'Best scores on every test row.'
+                : ended
+                  ? `Final standings from each entry's selected submissions${item.finalized_at ? ', with medals' : ''}. Change compares with the public rank.`
+                  : 'Host preview: participants see the private leaderboard after the competition ends.'}
+            </p>
             {board.items.length ? (
               <>
-              <div className="table-scroll">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Rank</th>
-                      <th>Participant</th>
-                      <th>Best {item.metric}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {board.items.map((row) => (
-                      <tr key={row.username}>
-                        <td>#{row.rank}</td>
-                        <td>{row.username}</td>
-                        <td>{row.score.toFixed(4)}</td>
+                <div className="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Rank</th>
+                        <th>Participant</th>
+                        <th>
+                          {boardView === 'private' ? 'Private' : 'Best'} {label}
+                        </th>
+                        {boardView === 'private' && (
+                          <>
+                            <th>Change</th>
+                            <th>Medal</th>
+                          </>
+                        )}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {board.items.length < board.total && (
-                <div className="load-more-row">
-                  <span className="muted">
-                    Showing {board.items.length} of {board.total}
-                  </span>
-                  <button className="button secondary" onClick={() => void more('leaderboard')}>
-                    Load more
-                  </button>
+                    </thead>
+                    <tbody>
+                      {board.items.map((row) => (
+                        <tr key={`${row.team_id ?? ''}-${row.username}`}>
+                          <td>#{row.rank}</td>
+                          <td>{row.username}</td>
+                          <td>{formatScore(row.score)}</td>
+                          {boardView === 'private' && (
+                            <>
+                              <td>
+                                <RankChange rank={row.rank} publicRank={row.public_rank} />
+                              </td>
+                              <td>
+                                <MedalBadge medal={row.medal} />
+                              </td>
+                            </>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              )}
+                {board.items.length < board.total && (
+                  <div className="load-more-row">
+                    <span className="muted">
+                      Showing {board.items.length} of {board.total}
+                    </span>
+                    <button className="button secondary" onClick={() => void more('leaderboard')}>
+                      Load more
+                    </button>
+                  </div>
+                )}
               </>
             ) : (
               <p className="muted">
@@ -395,7 +496,14 @@ export default function CompetitionPage({
           </>
         )}
         {tab === 'team' && (
-          <CompetitionTeam id={id} user={user} joined={joined} closed={closed} signIn={signIn} />
+          <CompetitionTeam
+            id={id}
+            user={user}
+            joined={joined}
+            closed={!!timeline && !timeline.team_forming_open}
+            leavingClosed={!!timeline && !timeline.team_changes_open}
+            signIn={signIn}
+          />
         )}
         {tab === 'submissions' && (
           <>
@@ -414,6 +522,10 @@ export default function CompetitionPage({
               <p>Join this competition to submit predictions.</p>
             ) : closed ? (
               <p>Submissions are closed.</p>
+            ) : timeline && !timeline.started && timeline.starts_at ? (
+              <p>Submissions open {new Date(timeline.starts_at).toLocaleString()}.</p>
+            ) : needsRules ? (
+              <p>Accept the updated rules to submit predictions.</p>
             ) : (
               <form
                 onSubmit={(event) => {
@@ -424,15 +536,22 @@ export default function CompetitionPage({
                       method: 'POST',
                       body,
                     });
-                    setNotice(`Submission scored: ${result.score.toFixed(4)} ${item.metric}`);
+                    setNotice(
+                      `Submission scored: ${item.leaderboard_split ? 'public ' : ''}${label} ${formatScore(result.score)}`,
+                    );
                   });
                 }}
               >
+                <p className="submission-allowance" role="status">
+                  {remaining} of {membership?.max_daily_submissions} submissions left today
+                  {membership?.team_id ? ' for your team' : ''} (resets at 00:00 UTC; notebook
+                  commits count too)
+                </p>
                 <label>
                   Submit predictions
                   <input name="file" type="file" accept=".csv" required />
                 </label>
-                <button className="button secondary" disabled={busy}>
+                <button className="button secondary" disabled={busy || remaining === 0}>
                   Score submission
                 </button>
               </form>
@@ -440,42 +559,76 @@ export default function CompetitionPage({
             {user && (
               <>
                 <h3>Your submissions</h3>
-                <p className="muted">Includes submissions from your current team.</p>
+                <p className="muted">
+                  Includes submissions from your current team.{' '}
+                  {closed
+                    ? 'Final selections are locked.'
+                    : `Select up to ${finalLimit} final submissions for private scoring (${finalCount} selected, shared with your team). Without a selection, your best public submissions are used.`}
+                </p>
                 {submissions.length ? (
                   <>
-                  <div className="table-scroll">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>File</th>
-                          <th>Submitted</th>
-                          <th>{item.metric}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {submissions.map((row) => (
-                          <tr key={row.id}>
-                            <td>{row.filename}</td>
-                            <td>{new Date(row.created_at).toLocaleString()}</td>
-                            <td>{row.score.toFixed(4)}</td>
+                    <div className="table-scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Final</th>
+                            <th>File</th>
+                            <th>By</th>
+                            <th>Submitted</th>
+                            <th>
+                              {item.leaderboard_split ? 'Public ' : ''}
+                              {label}
+                            </th>
+                            {showPrivate && <th>Private {label}</th>}
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {submissions.length < submissionTotal && (
-                    <div className="load-more-row">
-                      <span className="muted">
-                        Showing {submissions.length} of {submissionTotal}
-                      </span>
-                      <button
-                        className="button secondary"
-                        onClick={() => void more('submissions')}
-                      >
-                        Load more
-                      </button>
+                        </thead>
+                        <tbody>
+                          {submissions.map((row) => (
+                            <tr key={row.id}>
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  aria-label={`Use ${row.filename} from ${new Date(row.created_at).toLocaleString()} as a final submission`}
+                                  checked={row.final_selected}
+                                  disabled={
+                                    busy ||
+                                    closed ||
+                                    (!row.final_selected && finalCount >= finalLimit)
+                                  }
+                                  onChange={(event) => {
+                                    const selected = event.target.checked;
+                                    void act(async () => {
+                                      await api(`${base}/submissions/${row.id}/final`, {
+                                        method: 'PUT',
+                                        body: JSON.stringify({ selected }),
+                                      });
+                                    });
+                                  }}
+                                />
+                              </td>
+                              <td>{row.filename}</td>
+                              <td>{row.submitter}</td>
+                              <td>{new Date(row.created_at).toLocaleString()}</td>
+                              <td>{formatScore(row.score)}</td>
+                              {showPrivate && <td>{formatScore(row.private_score)}</td>}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
-                  )}
+                    {submissions.length < submissionTotal && (
+                      <div className="load-more-row">
+                        <span className="muted">
+                          Showing {submissions.length} of {submissionTotal}
+                        </span>
+                        <button
+                          className="button secondary"
+                          onClick={() => void more('submissions')}
+                        >
+                          Load more
+                        </button>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <p className="muted">You have not submitted predictions yet.</p>
@@ -484,60 +637,79 @@ export default function CompetitionPage({
             )}
           </>
         )}
-        {tab === 'rules' &&
-          (item.rules_url ? (
-            <>
-              <h2>Competition rules</h2>
-              <Markdown>
-                {item.rules_content || 'The rules text was not included in this import.'}
-              </Markdown>
-              <p className="external-reference">
-                Original rules (external reference, not available offline):{' '}
-                <a href={item.rules_url} target="_blank" rel="noreferrer noopener">
-                  {item.rules_url}
-                </a>
-              </p>
-              {item.source_url && (
+        {tab === 'rules' && (
+          <>
+            <h2>Competition rules</h2>
+            <p className="muted">
+              Revision {item.rules_revision ?? 1}
+              {membership?.accepted_rules_revision
+                ? ` · You accepted revision ${membership.accepted_rules_revision}${membership.rules_accepted_at ? ` on ${new Date(membership.rules_accepted_at).toLocaleDateString()}` : ''}`
+                : ''}
+            </p>
+            {item.rules && <Markdown>{item.rules}</Markdown>}
+            {item.rules_url && (
+              <>
+                <h3>Imported rules</h3>
+                <Markdown>
+                  {item.rules_content || 'The rules text was not included in this import.'}
+                </Markdown>
                 <p className="external-reference">
-                  Source (external reference, not available offline):{' '}
-                  <a href={item.source_url} target="_blank" rel="noreferrer noopener">
-                    {item.source_url}
+                  Original rules (external reference, not available offline):{' '}
+                  <a href={item.rules_url} target="_blank" rel="noreferrer noopener">
+                    {item.rules_url}
                   </a>
                 </p>
-              )}
-              <p className="muted">
-                Joining in Arena does not enroll you with the original host. Local scoring is
-                deferred; the original submission format is{' '}
-                {(item.submission_columns || ['id', 'prediction']).join(',')}.
-              </p>
-            </>
+                {item.source_url && (
+                  <p className="external-reference">
+                    Source (external reference, not available offline):{' '}
+                    <a href={item.source_url} target="_blank" rel="noreferrer noopener">
+                      {item.source_url}
+                    </a>
+                  </p>
+                )}
+                <p className="muted">
+                  Joining in Arena does not enroll you with the original host. Local scoring is
+                  deferred; the original submission format is{' '}
+                  {(item.submission_columns || ['id', 'prediction']).join(',')}.
+                </p>
+              </>
+            )}
+            <h3>Enforced by Arena</h3>
+            <RulesSummary item={item} />
+            {!item.rules && !item.rules_url && (
+              <p className="muted">No additional host rules have been published.</p>
+            )}
+          </>
+        )}
+        {tab === 'host' &&
+          (canHost ? (
+            <CompetitionHost id={id} changed={() => setRevision((value) => value + 1)} />
           ) : (
-            <>
-              <h2>Submission rules</h2>
-              <ul className="competition-rules">
-                <li>Sign in and join the competition before submitting predictions.</li>
-                <li>
-                  Submit a UTF-8 CSV with exactly these columns in order:{' '}
-                  {(item.submission_columns || ['id', 'prediction']).join(',')}. Include one finite
-                  numeric prediction for every required ID, with no missing, duplicate, or extra
-                  IDs. Predictions must be between -1e12 and 1e12.
-                </li>
-                <li>Submission files must be no larger than 1 MB.</li>
-                <li>
-                  {item.deadline
-                    ? `Submissions close at ${new Date(item.deadline).toLocaleString()}.`
-                    : 'This practice competition has no deadline.'}
-                </li>
-                <li>
-                  The leaderboard uses each participant’s best {item.metric} score.{' '}
-                  {item.metric === 'Accuracy' ? 'Higher' : 'Lower'} is better; equal scores are
-                  ordered by username.
-                </li>
-              </ul>
-              <p className="muted">No additional organizer-specific rules have been published.</p>
-            </>
+            <p>Host tools are available to the competition host and administrators.</p>
           ))}
       </section>
+      {rulesOpen && (
+        <JoinRulesDialog
+          item={item}
+          rejoin={joined}
+          busy={busy}
+          error={error}
+          accept={(rulesRevision) =>
+            void act(async () => {
+              await api(`${base}/join`, {
+                method: 'POST',
+                body: JSON.stringify({ accept_rules: true, rules_revision: rulesRevision }),
+              });
+              setRulesOpen(false);
+              setNotice(joined ? 'You accepted the updated rules' : 'You joined the competition');
+            })
+          }
+          close={() => {
+            setRulesOpen(false);
+            setError('');
+          }}
+        />
+      )}
     </article>
   );
 }

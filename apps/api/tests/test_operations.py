@@ -503,7 +503,7 @@ def test_pagination_headers_and_limits(member):
     assert member.get("/api/datasets?offset=1&limit=1").headers["X-Total-Count"] == "3"
     assert len(member.get("/api/datasets?offset=1&limit=1").json()) == 1
 
-    member.post("/api/competitions/1/join")
+    member.post("/api/competitions/1/join", json={"accept_rules": True})
     for score in (0, 1, 2):
         member.post(
             "/api/competitions/1/submissions",
@@ -512,7 +512,7 @@ def test_pagination_headers_and_limits(member):
     history = member.get("/api/competitions/1/submissions?limit=2")
     assert history.headers["X-Total-Count"] == "3" and len(history.json()) == 2
     assert len(member.get("/api/competitions/1/submissions?offset=2").json()) == 1
-    account("rival").post("/api/competitions/1/join")
+    account("rival").post("/api/competitions/1/join", json={"accept_rules": True})
     board = member.get("/api/competitions/1/leaderboard?limit=1")
     assert board.headers["X-Total-Count"] == "1"
     assert board.json()[0]["rank"] == 1
@@ -531,8 +531,16 @@ def test_missing_test_features_return_404_and_stats_skip_seed_user(member):
         db.add(competition)
         db.commit()
         id = competition.id
-    assert member.post(f"/api/competitions/{id}/join").status_code == 200
+    assert (
+        member.post(
+            f"/api/competitions/{id}/join", json={"accept_rules": True}
+        ).status_code
+        == 200
+    )
     assert member.get(f"/api/competitions/{id}/test").status_code == 404
     assert member.get(f"/api/competitions/{id}/data").status_code == 404
-    assert member.post("/api/competitions/1/join").status_code == 200
+    assert (
+        member.post("/api/competitions/1/join", json={"accept_rules": True}).status_code
+        == 200
+    )
     assert b"temperature" in member.get("/api/competitions/1/test").content

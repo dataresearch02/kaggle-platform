@@ -94,7 +94,7 @@ test('generated notebook file becomes a reusable input and survives a fork', asy
         })
       ).status(),
     ).toBe(200);
-    await page.request.post('/api/competitions/1/join', { headers });
+    await page.request.post('/api/competitions/1/join', { headers, data: { accept_rules: true } });
     const job = await (
       await page.request.post('/api/notebooks', {
         headers,

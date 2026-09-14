@@ -63,7 +63,7 @@ def test_join_gate_and_private_answers(member):
         f"/files/{file_id}/download",
     ]:
         assert member.get(base + path).status_code == 403
-    assert member.post(base + "/join").status_code == 200
+    assert member.post(base + "/join", json={"accept_rules": True}).status_code == 200
     preview = member.get(f"{base}/files/{file_id}").json()
     assert [col["name"] for col in preview["columns"]] == ["id", "temperature"]
     assert (

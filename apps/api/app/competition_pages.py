@@ -5,7 +5,7 @@ import io
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .notebook_visibility import published_code, visible_notebooks
 from .auth import current_user
@@ -44,12 +44,44 @@ def serialize(item):
 def membership(
     id: int, user: User = Depends(current_user), db: Session = Depends(get_db)
 ):
-    require_competition(db, id)
+    """The signed-in user's entry: rules, timeline, daily limit and final selection."""
+    from .competition_policy import (
+        can_host,
+        entry_for,
+        needs_rules,
+        submissions_today,
+        timeline,
+    )
+    from .competition_results import finalize_if_due
+    from .models import Submission
+    from .team_scoring import owner_filter
+
+    competition = require_competition(db, id)
+    finalize_if_due(db, competition)
+    entry = entry_for(db, id, user)
+    used, team_id = submissions_today(db, competition, user)
     return {
-        "joined": db.scalar(
-            select(Entry.id).where(Entry.competition_id == id, Entry.user_id == user.id)
-        )
-        is not None
+        "joined": entry is not None,
+        "rules_revision": competition.rules_revision,
+        "accepted_rules_revision": entry.rules_revision if entry else None,
+        "rules_accepted_at": entry.rules_accepted_at if entry else None,
+        "needs_rules_acceptance": needs_rules(competition, entry),
+        "team_id": team_id,
+        "submissions_today": used,
+        "max_daily_submissions": competition.max_daily_submissions,
+        "remaining_submissions_today": max(competition.max_daily_submissions - used, 0),
+        "max_final_submissions": competition.max_final_submissions,
+        "final_selected": db.scalar(
+            select(func.count())
+            .select_from(Submission)
+            .where(
+                Submission.competition_id == id,
+                Submission.final_selected == 1,
+                owner_filter(team_id, user.id),
+            )
+        ),
+        "can_host": can_host(db, competition, user),
+        "timeline": timeline(db, competition).json(),
     }
 
 

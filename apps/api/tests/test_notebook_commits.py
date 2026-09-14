@@ -39,7 +39,7 @@ def test_fork_is_private_save_is_not_publish_and_success_commits(member, commit_
         == 409
     )
     assert member.post(path + "/commits", json={"competition_id": 1}).status_code == 403
-    member.post("/api/competitions/1/join")
+    member.post("/api/competitions/1/join", json={"accept_rules": True})
     response = member.post(path + "/commits", json={"competition_id": 1})
     assert response.status_code == 202, response.text
     job_id = response.json()["id"]
@@ -206,7 +206,7 @@ def test_commit_rejects_closed_competitions_and_unsafe_filenames(member, commit_
     from app.models import Competition
 
     fork = member.post("/api/code/1/fork?competition_id=1").json()["id"]
-    member.post("/api/competitions/1/join")
+    member.post("/api/competitions/1/join", json={"accept_rules": True})
     path = f"/api/code/{fork}/commits"
     assert (
         member.post(
@@ -300,7 +300,7 @@ def test_runner_waits_for_shell_and_iopub_before_executing(monkeypatch):
 def test_cancelled_commit_never_publishes(member, commit_db):
     fork = member.post("/api/code/1/fork?competition_id=1").json()["id"]
     path = f"/api/code/{fork}"
-    member.post("/api/competitions/1/join")
+    member.post("/api/competitions/1/join", json={"accept_rules": True})
     job = member.post(path + "/commits", json={"competition_id": 1}).json()
     with commit_db() as db:
         row = db.get(NotebookCommit, job["id"])
@@ -331,7 +331,7 @@ def test_artifact_capture_failure_does_not_publish_or_score(member, monkeypatch)
     from app import notebook_files
     from sqlalchemy import select
 
-    member.post("/api/competitions/1/join")
+    member.post("/api/competitions/1/join", json={"accept_rules": True})
     notebook = member.post(
         "/api/notebooks", json={"title": "Atomic commit", "code": "print(1)"}
     ).json()["id"]

@@ -8,7 +8,7 @@ test('CPU worker cancels work and runs without database credentials or external 
     headers,
     data: { username: `cpu_job_${Date.now()}`, password: 'cpu-evaluation-password' },
   });
-  await page.request.post('/api/competitions/1/join', { headers });
+  await page.request.post('/api/competitions/1/join', { headers, data: { accept_rules: true } });
   async function create(code: string) {
     const row = await (
       await page.request.post('/api/notebooks', {

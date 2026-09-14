@@ -62,7 +62,7 @@ Open **http://localhost:5173**. Vite proxies `/api` to FastAPI. This standalone 
 
 Open the **Create** dropdown in the sidebar to choose **Notebook**, **Competition**, **Dataset**, or **Benchmark**. Each section also has its own creation button. **Notebook** opens the full-screen Arena editor immediately with a temporary draft. Name it and click **Save** (or press Ctrl/Cmd+S) to create a permanent notebook with its saved outputs. Closing without Save discards the draft. Other creation options slide in from the right over the selected collection. The panel occupies the right half of the desktop viewport and the full width on smaller screens, with file uploads and metadata fields. Drag a CSV onto the upload area or browse for a file, review its name and size, then publish. Sign in before publishing.
 
-By default only hosts and administrators can create competitions and CSV benchmarks; an administrator can allow every member (see [administration](docs/administration.md)). Competitions require a future closing date; benchmarks stay open. Both accept a public UTF-8 test CSV (up to 10 MB, unique `id` plus feature columns) and a private answer CSV (up to 1 MB, exactly `id,prediction`, matching IDs). Participants download test data and a sample submission, join, then upload predictions for automatic scoring and a leaderboard. Choose RMSE, MAE, Accuracy or binary LogLoss; only Accuracy ranks higher scores first. Include the task instructions and training-data links in the description. Evaluation data is fixed after publication. These legacy CSV benchmarks remain under **Benchmarks → CSV benchmarks**. The main Benchmarks page now supports reusable Python tasks, versioned local/API models, isolated CPU evaluation, detailed results and aggregate leaderboards; see [benchmark workflow and provider setup](docs/benchmarks.md).
+By default only hosts and administrators can create competitions and CSV benchmarks; an administrator can allow every member (see [administration](docs/administration.md)). Competitions require a future closing date; benchmarks stay open. Both accept a public UTF-8 test CSV (up to 10 MB, unique `id` plus feature columns) and a private answer CSV (up to 1 MB, exactly `id,prediction`, matching IDs). Participants download test data and a sample submission, join, then upload predictions for automatic scoring and a leaderboard. Choose a metric from the registry (RMSE, MSE, MAE, RMSLE, R², MAPE, Accuracy, binary LogLoss, F1, macro F1, ROC-AUC, quadratic weighted kappa or MAP@K); the UI shows each metric's direction. Answer files may add a `Usage` column (Public/Private), or hosts can give a public fraction, to split public and private leaderboards. Participants accept the rules when joining. See [competitions](docs/competitions.md) for timelines, daily limits, final submission selection, host tools and medals. Include the task instructions and training-data links in the description. Evaluation data is fixed after publication. These legacy CSV benchmarks remain under **Benchmarks → CSV benchmarks**. The main Benchmarks page now supports reusable Python tasks, versioned local/API models, isolated CPU evaluation, detailed results and aggregate leaderboards; see [benchmark workflow and provider setup](docs/benchmarks.md).
 
 Creator metadata, test data, answers and scores persist in PostgreSQL. A new `challenge_details` table extends existing competition records without rewriting them; the seeded competition continues to work.
 
@@ -71,9 +71,9 @@ Creator metadata, test data, answers and scores persist in PostgreSQL. A new `ch
 1. Register an account. Usernames use letters, numbers, and underscores; passwords need at least 10 characters.
 2. Open **More → Learn → Python foundations**, read a lesson, and mark it complete.
 3. Download **Datasets → City bikes & daily demand**.
-4. Open **Competitions → Predict bike demand**, join, and download test data and the sample submission.
+4. Open **Competitions → Predict bike demand**, join (read and accept the rules), and download test data and the sample submission.
 5. Create a notebook, or open a saved notebook and click **Start session**. Use Python to load a dataset download URL, then train a baseline in the Arena editor. The Intro to machine learning course includes example code.
-6. Open the competition’s **Submissions** tab and upload a UTF-8 CSV with exactly `id,prediction` columns and IDs 7, 8, and 9. Arena calculates RMSE and updates the leaderboard with your best score.
+6. Open the competition’s **Submissions** tab and upload a UTF-8 CSV with exactly `id,prediction` columns and IDs 7, 8, and 9. Arena calculates RMSE and updates the leaderboard with your best score. You can submit five times per UTC day.
 7. Share an approach in Discussions or publish a model reference card.
 
 ## Project structure
@@ -96,7 +96,10 @@ apps/
       db.py            SQLite / PostgreSQL connection and storage configuration
       models.py        Relational data model
       schemas.py       Request validation
-      scoring.py       Strict prediction validation and metric calculation
+      scoring.py       Metric registry, strict prediction validation, public/private scoring
+      competition_policy.py  Rules acceptance, timeline, daily limits and host checks
+      competition_host.py    Host tools, rules, final selection and metric API
+      competition_results.py Finalization, medals, private leaderboard and rescoring
       notebook_runtime.py  Hub lifecycle, first-open import and private export
       seed.py          Synthetic starter datasets, challenge, courses and notebook
     tests/             API workflow, access control and scoring tests
@@ -160,7 +163,7 @@ The API also exposes `/api/health`. POST/PUT requests require `X-Arena-Client: w
 ## Current boundaries
 
 - New datasets and notebooks are private by default, with explicit visibility and sharing controls. Notebook history stores immutable saves and supports restoration into the editor. Catalog lists are paginated with `offset`/`limit` (at most 100 per request) and an `X-Total-Count` header.
-- Competitions support RMSE, MAE, Accuracy and binary LogLoss, team-owned submissions and a public leaderboard. Private leaderboards, submission limits, final selection and anti-cheating controls remain incomplete.
+- Competitions have a metric registry, rules acceptance with revisions, a start/entry/merger/end timeline, public and private leaderboards, daily submission limits, final submission selection, host tools (submissions, exports, rescoring, disqualification, shake-up) and finalization with Kaggle-style medals ([competitions](docs/competitions.md)). Automated leakage and duplicate-account detection are not implemented.
 - Interactive notebooks use the native Arena editor and per-user Jupyter containers. Compose evaluates competition commits through a separate CPU worker with disposable offline containers, cancellation, resource limits and restart recovery. OpenShift can use KubeSpawner and GPU-enabled Kubernetes Jobs; see [the core workflow and OpenShift GPU guide](docs/openshift-gpu.md).
 - Dataset and model details support immutable additional file versions and downloads (10 MB per file). Model cards can contain hosted files and optional external links. Notebook inputs pin file versions. Large artifact storage and hosted inference remain incomplete.
 - Courses contain lessons and per-user completion tracking; exercises are not automatically graded.
@@ -185,9 +188,9 @@ Run `make format` to format the project, or `make format-check` to verify format
 
 ## Competition pages
 
-Competition cards open full pages at `#competitions/<id>/overview`. Overview, Data, Code, Models, Discussion, Leaderboard, Rules, Team and Submissions have shareable tab URLs and support browser back/forward navigation. The header provides Join competition and shows membership or closed status. Data previews public features only and offers test/sample CSV downloads. Leaderboard displays participants’ best scores. Submissions contains prediction uploads and the signed-in user's latest 100 scored submissions, including timestamps. Team supports creating a team, joining by invite code, listing members and leaving. Team membership and submission attribution persist in PostgreSQL. Team scores aggregate on the leaderboard. Membership changes lock after submissions or pending evaluations, and close at the competition deadline.
+Competition cards open full pages at `#competitions/<id>/overview`. Overview, Data, Code, Models, Discussion, Leaderboard, Rules, Team and Submissions have shareable tab URLs and support browser back/forward navigation. The header provides Join competition and shows membership or closed status. Data previews public features only and offers test/sample CSV downloads. Leaderboard switches between the public leaderboard and the private leaderboard, which is published after the end (hosts can preview it) with rank changes and medals. Submissions contains prediction uploads and the signed-in user's latest 100 scored submissions, including timestamps. Team supports creating a team, joining by invite code, listing members and leaving. Team membership and submission attribution persist in PostgreSQL. Team scores aggregate on the leaderboard. Membership changes lock after submissions or pending evaluations, and close at the entry and team merger deadlines. Team members share the daily submission limit and final selections.
 
-Creators can link their published Codes and model cards to a competition. These tabs show linked resources, not unrelated community content. Discussion posts are stored per competition. Rules describe the current enforced submission format, size, deadline and scoring behavior; organizer-specific rule editing is not implemented. Competition deletion removes its resource links and discussion posts while retaining the independently published notebooks and model cards.
+Creators can link their published Codes and model cards to a competition. These tabs show linked resources, not unrelated community content. Discussion posts are stored per competition. Rules show the host's rules (edited in the Host tab, with material changes requiring members to accept again) and the enforced submission format, size, limits, timeline and scoring behavior. Competition deletion removes its resource links and discussion posts while retaining the independently published notebooks and model cards.
 
 ### Optional Kaggle practice content
 

@@ -12,7 +12,7 @@ def test_team_membership_and_captain_transfer(member):
     base = f"/api/competitions/{competition}"
     assert member.get(base + "/team").json() is None
     assert member.post(base + "/team", json={"name": "Team"}).status_code == 403
-    member.post(base + "/join")
+    member.post(base + "/join", json={"accept_rules": True})
     assert member.post(base + "/team", json={"name": "  "}).status_code == 422
     response = member.post(base + "/team", json={"name": " Team Arena "})
     assert response.status_code == 201
@@ -27,8 +27,8 @@ def test_team_membership_and_captain_transfer(member):
         json={"username": "teammate", "password": "good-password-123"},
     )
     assert member.get(base + "/team").json() is None
-    member.post(base + "/join")
-    member.post(f"/api/competitions/{other}/join")
+    member.post(base + "/join", json={"accept_rules": True})
+    member.post(f"/api/competitions/{other}/join", json={"accept_rules": True})
     assert (
         member.post(
             f"/api/competitions/{other}/team/join",
@@ -77,7 +77,7 @@ def test_team_membership_and_captain_transfer(member):
 def test_closed_and_deleted_competition_teams(member):
     competition = publish(member).json()["id"]
     base = f"/api/competitions/{competition}"
-    member.post(base + "/join")
+    member.post(base + "/join", json={"accept_rules": True})
     assert (
         member.post(base + "/team", json={"name": "Persistent team"}).status_code == 201
     )
@@ -99,7 +99,7 @@ def test_closed_and_deleted_competition_teams(member):
 def test_team_submission_history_and_locked_membership(member):
     competition = publish(member).json()["id"]
     base = f"/api/competitions/{competition}"
-    member.post(base + "/join")
+    member.post(base + "/join", json={"accept_rules": True})
     team = member.post(base + "/team", json={"name": "Scoring team"}).json()
     response = member.post(
         base + "/submissions", files={"file": ("p.csv", b"id,prediction\na,1\nb,2\n")}
@@ -114,7 +114,7 @@ def test_team_submission_history_and_locked_membership(member):
         "/api/auth/register",
         json={"username": "newteammate", "password": "good-password-123"},
     )
-    member.post(base + "/join")
+    member.post(base + "/join", json={"accept_rules": True})
     assert (
         member.post(
             base + "/team/join", json={"invite_code": team["invite_code"]}

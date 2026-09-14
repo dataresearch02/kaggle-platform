@@ -124,7 +124,8 @@ def texts(meta, files, metric):
             "leaderboard."
         ),
         "evaluation": EVALUATION[metric]
-        + "\n\nScores are calculated on every row of the test set.",
+        + "\n\nThe public leaderboard is scored on the test rows marked Public; the "
+        "remaining rows are held out for the private leaderboard.",
         "data_description": (
             f"## Task\n\n{meta['about']}\n\nTask type: {meta['task']}. Target column: "
             f"`{target}`.\n\n## Files\n\n{file_list}\n\n## Features\n\n{feature_list}"
@@ -213,9 +214,10 @@ def import_pack(db, owner, folder):
             metric=metric,
             deadline=PRACTICE_DEADLINE,
             solution=json.dumps(solution),
-            # Kept with the answers for public/private leaderboards; not scored yet.
+            # Public/Private row assignment for the two leaderboards.
             solution_usage=json.dumps(usage),
             prize="Practice",
+            max_daily_submissions=20,
         )
         db.add(competition)
         db.flush()

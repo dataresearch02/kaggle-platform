@@ -40,7 +40,7 @@ def test_competition_folder_join_and_remove(member):
     base = f"/api/editor/notebooks/{notebook}"
     assert member.get("/api/input-sources?kind=competition").json()["items"]
     assert member.post(base + "/input-sources/competition/1").status_code == 403
-    member.post("/api/competitions/1/join")
+    member.post("/api/competitions/1/join", json={"accept_rules": True})
     response = member.post(base + "/input-sources/competition/1")
     assert response.status_code == 200, response.text
     source = response.json()
@@ -172,7 +172,7 @@ def test_input_preview_requires_membership_and_returns_table(member):
     file_id = files[0]["id"]
     path = f"/api/input-sources/competition/1/files/{file_id}/preview"
     assert member.get(path).status_code == 403
-    member.post("/api/competitions/1/join")
+    member.post("/api/competitions/1/join", json={"accept_rules": True})
     response = member.get(path)
     assert response.status_code == 200
     assert response.json()["format"] == "table"

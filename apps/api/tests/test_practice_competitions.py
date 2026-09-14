@@ -94,7 +94,9 @@ def test_practice_import_is_idempotent_and_scores_offline(member):
             usage = json.loads(db.get(Competition, item["competition"]).solution_usage)
             assert set(usage.values()) == {"Public", "Private"}
 
-        assert member.post(base + "/join").status_code == 200
+        assert (
+            member.post(base + "/join", json={"accept_rules": True}).status_code == 200
+        )
         solution = (folder / "solution.csv").read_text()
         with_usage = member.post(
             base + "/submissions", files={"file": ("solution.csv", solution.encode())}

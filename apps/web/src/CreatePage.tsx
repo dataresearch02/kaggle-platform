@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { X, ArrowRight, Globe, Sparkles } from 'lucide-react';
-import { api } from './api';
+import { api, type MetricInfo } from './api';
 import FileUpload from './FileUpload';
 const starterCode = 'import pandas as pd\n\n# Upload a CSV in JupyterLab to get started.\n';
 
@@ -19,6 +19,24 @@ export default function CreatePage({
   const [closing, setClosing] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [metrics, setMetrics] = useState<MetricInfo[]>([]);
+  const [metric, setMetric] = useState('RMSE');
+  const challenge = page === 'competitions' || page === 'benchmarks';
+  useEffect(() => {
+    if (!challenge) return;
+    let active = true;
+    api<MetricInfo[]>('/metrics')
+      .then((rows) => {
+        if (active) setMetrics(rows);
+      })
+      .catch((e) => {
+        if (active) setError(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [challenge]);
+  const selectedMetric = metrics.find((row) => row.name === metric);
   useEffect(() => {
     const previous = document.body.style.overflow;
     const returnFocus = document.activeElement as HTMLElement | null;
@@ -44,6 +62,9 @@ export default function CreatePage({
     setError('');
     const f = new FormData(e.currentTarget);
     if (page === 'models' && !f.get('url')) f.delete('url');
+    for (const name of ['metric_k', 'public_fraction', 'max_daily_submissions', 'rules']) {
+      if (f.get(name) === '') f.delete(name);
+    }
     if (page === 'competitions' && f.get('deadline')) {
       f.set('deadline', new Date(String(f.get('deadline'))).toISOString());
     }
@@ -155,12 +176,61 @@ export default function CreatePage({
                   </p>
                   <label>
                     Evaluation metric
-                    <select name="metric" defaultValue="RMSE">
-                      <option value="RMSE">RMSE — lower is better</option>
-                      <option value="MAE">MAE — lower is better</option>
-                      <option value="Accuracy">Accuracy — higher is better</option>
-                      <option value="LogLoss">Binary log loss — lower is better</option>
+                    <select
+                      name="metric"
+                      value={metric}
+                      onChange={(event) => setMetric(event.target.value)}
+                    >
+                      {(metrics.length
+                        ? metrics
+                        : [{ name: 'RMSE', title: 'Root mean squared error', direction: 'lower' }]
+                      ).map((row) => (
+                        <option key={row.name} value={row.name}>
+                          {row.title} — {row.direction} is better
+                        </option>
+                      ))}
                     </select>
+                    {selectedMetric && (
+                      <small>
+                        {selectedMetric.input}. Formula: <code>{selectedMetric.formula}</code>
+                      </small>
+                    )}
+                  </label>
+                  {selectedMetric?.uses_k && (
+                    <label>
+                      K (predictions counted per row)
+                      <input name="metric_k" type="number" min={1} max={100} defaultValue={5} />
+                    </label>
+                  )}
+                  <label>
+                    Public leaderboard fraction (optional)
+                    <input
+                      name="public_fraction"
+                      type="number"
+                      min={0.01}
+                      max={0.99}
+                      step={0.01}
+                      placeholder="All rows public"
+                    />
+                    <small>
+                      Used when the answer CSV has no Usage column: rows are assigned to the public
+                      or private leaderboard deterministically.
+                    </small>
+                  </label>
+                  <label>
+                    Daily submissions per team or participant (optional)
+                    <input
+                      name="max_daily_submissions"
+                      type="number"
+                      min={1}
+                      max={100}
+                      placeholder={page === 'competitions' ? '5' : '20'}
+                    />
+                  </label>
+                  <label>
+                    Rules (Markdown, optional)
+                    <textarea name="rules" rows={4} maxLength={50000} />
+                    <small>Participants accept these rules when they join.</small>
                   </label>
                   <label>
                     Category
@@ -189,7 +259,7 @@ export default function CreatePage({
                     name="solution_file"
                     label="Private answer CSV"
                     maxMB={1}
-                    hint="Exactly id,prediction columns. IDs must match the test file. Answers stay private."
+                    hint="id,prediction columns, optionally followed by Usage (Public or Private). IDs must match the test file. Answers stay private."
                   />
                 </>
               )}

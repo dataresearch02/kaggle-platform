@@ -72,11 +72,79 @@ def session_auth_method(connection):
     )
 
 
+def competition_rules_acceptance(connection):
+    add_columns(
+        connection,
+        "competitions",
+        [
+            ("rules", "TEXT NOT NULL DEFAULT ''"),
+            ("rules_revision", "INTEGER NOT NULL DEFAULT 1"),
+            ("rules_updated_at", "VARCHAR"),
+        ],
+    )
+    add_columns(
+        connection,
+        "entries",
+        [("rules_revision", "INTEGER"), ("rules_accepted_at", "VARCHAR")],
+    )
+    if inspect(connection).has_table("entries"):
+        # Existing participants count as having accepted the current rules.
+        connection.execute(
+            text(
+                "UPDATE entries SET rules_revision = (SELECT competitions.rules_revision"
+                " FROM competitions WHERE competitions.id = entries.competition_id),"
+                " rules_accepted_at = :now WHERE rules_revision IS NULL"
+            ),
+            {"now": now()},
+        )
+
+
+def competition_timeline_limits(connection):
+    add_columns(
+        connection,
+        "competitions",
+        [
+            ("entry_deadline", "VARCHAR"),
+            ("merger_deadline", "VARCHAR"),
+            ("max_daily_submissions", "INTEGER NOT NULL DEFAULT 5"),
+            ("max_final_submissions", "INTEGER NOT NULL DEFAULT 2"),
+        ],
+    )
+    if inspect(connection).has_table("competitions"):
+        # Practice competitions and CSV benchmarks (no deadline) allow 20 a day.
+        connection.execute(
+            text(
+                "UPDATE competitions SET max_daily_submissions = 20"
+                " WHERE deadline LIKE '9999-%'"
+            )
+        )
+
+
+def submission_private_scores(connection):
+    add_columns(
+        connection,
+        "competitions",
+        [("metric_k", "INTEGER"), ("finalized_at", "VARCHAR")],
+    )
+    # Legacy scores stay public; private scores stay empty until rescored.
+    add_columns(
+        connection,
+        "submissions",
+        [
+            ("private_score", "FLOAT"),
+            ("final_selected", "INTEGER NOT NULL DEFAULT 0"),
+        ],
+    )
+
+
 MIGRATIONS = (
     ("0001_user_role_status", user_role_status),
     ("0002_moderation_hidden", moderation_hidden),
     ("0003_competition_solution_usage", competition_solution_usage),
     ("0004_session_auth_method", session_auth_method),
+    ("0005_competition_rules_acceptance", competition_rules_acceptance),
+    ("0006_competition_timeline_limits", competition_timeline_limits),
+    ("0007_submission_private_scores", submission_private_scores),
 )
 
 

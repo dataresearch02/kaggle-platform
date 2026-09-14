@@ -123,7 +123,7 @@ def test_competition_draft_requires_join_and_save_stays_private(member, hub):
         ).status_code
         == 403
     )
-    member.post("/api/competitions/1/join")
+    member.post("/api/competitions/1/join", json={"accept_rules": True})
     created = member.post("/api/notebook-drafts?competition_id=1")
     assert created.status_code == 201
     draft_id = created.json()["id"]
@@ -164,7 +164,7 @@ def test_competition_draft_cannot_bypass_evaluation_by_omitting_context(member, 
     from app.code_pages import store_publication
     from app.notebook_editor import Document
 
-    member.post("/api/competitions/1/join")
+    member.post("/api/competitions/1/join", json={"accept_rules": True})
     draft_id, path = new_draft(member)
     saved = member.post(
         f"/api/notebook-drafts/{draft_id}/save",
@@ -211,7 +211,7 @@ def test_competition_draft_cannot_bypass_evaluation_by_omitting_context(member, 
 def test_competition_creation_attaches_files_and_retains_link_without_client_context(
     member, hub
 ):
-    member.post("/api/competitions/1/join")
+    member.post("/api/competitions/1/join", json={"accept_rules": True})
     draft = member.post("/api/notebook-drafts?competition_id=1").json()["id"]
     response = member.get(f"/api/editor/drafts/{draft}/document")
     assert response.status_code == 200, response.text

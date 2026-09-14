@@ -11,7 +11,7 @@ test('competition New notebook automatically links inputs and keeps context afte
       password: 'competition-input-test-password',
     },
   });
-  await page.request.post('/api/competitions/1/join', { headers });
+  await page.request.post('/api/competitions/1/join', { headers, data: { accept_rules: true } });
   try {
     await page.goto('/#competitions/1/code');
     await page.getByRole('button', { name: 'New notebook', exact: true }).click();

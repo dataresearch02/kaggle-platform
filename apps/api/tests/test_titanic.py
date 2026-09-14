@@ -85,7 +85,9 @@ def test_original_import_preserves_files_and_defers_scoring(member, bundle):
         assert response["rules_content"] == "# Official rules"
         assert member.get(base + "/overview").json()["ends_at"] is None
         assert member.get(base + "/data").status_code == 403
-        assert member.post(base + "/join").status_code == 200
+        assert (
+            member.post(base + "/join", json={"accept_rules": True}).status_code == 200
+        )
         assert (
             member.get(base + "/sample").content
             == (bundle / "source/gender_submission.csv").read_bytes()

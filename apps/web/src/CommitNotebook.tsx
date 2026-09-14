@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from './api';
+import { api, type Item, type Membership } from './api';
 
 type Commit = {
   id: number;
@@ -25,12 +25,16 @@ export default function CommitNotebook({
 }) {
   const [open, setOpen] = useState(false);
   const [evaluationAvailable, setEvaluationAvailable] = useState<boolean | null>(null);
+  const [metricLabel, setMetricLabel] = useState('Score');
+  const [membership, setMembership] = useState<Membership | null>(null);
   useEffect(() => {
     let active = true;
     setEvaluationAvailable(null);
-    api<{ evaluation_available?: boolean }>(`/competitions/${competitionId}`)
+    api<Item>(`/competitions/${competitionId}`)
       .then((item) => {
-        if (active) setEvaluationAvailable(item.evaluation_available !== false);
+        if (!active) return;
+        setEvaluationAvailable(item.evaluation_available !== false);
+        setMetricLabel(item.metric_label || item.metric || 'Score');
       })
       .catch((error) => {
         if (active) setError(error.message);
@@ -65,6 +69,20 @@ export default function CommitNotebook({
     };
   }, [notebookId]);
   const pending = job?.status === 'queued' || job?.status === 'running';
+  useEffect(() => {
+    let active = true;
+    if (open)
+      api<Membership>(`/competitions/${competitionId}/membership`)
+        .then((row) => {
+          if (active) setMembership(row);
+        })
+        .catch(() => {
+          if (active) setMembership(null);
+        });
+    return () => {
+      active = false;
+    };
+  }, [competitionId, open]);
   return (
     <div className="notebook-commit">
       {!statusOnly && (
@@ -83,7 +101,7 @@ export default function CommitNotebook({
       {job && (
         <span role="status" className="commit-status">
           {job.status === 'succeeded'
-            ? `Evaluated · Score ${job.score?.toFixed(5)}`
+            ? `Evaluated · ${metricLabel} ${job.score?.toFixed(5)}`
             : job.status === 'failed'
               ? `Commit failed: ${job.error}`
               : `Commit ${job.status}`}
@@ -157,6 +175,13 @@ export default function CommitNotebook({
             publishes this snapshot in competition Code only after success. Join the competition
             first.
           </p>
+          {membership && (
+            <p role="status">
+              {membership.needs_rules_acceptance
+                ? 'The competition rules changed: accept them on the competition page before committing.'
+                : `${membership.remaining_submissions_today} of ${membership.max_daily_submissions} submissions left today (UTC). A queued commit uses one; failed runs do not count.`}
+            </p>
+          )}
           <button
             type="submit"
             disabled={disabled || busy || pending || evaluationAvailable !== true}

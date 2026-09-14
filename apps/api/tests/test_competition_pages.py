@@ -14,9 +14,9 @@ def test_competition_page_resources_and_discussion(member):
     assert data["columns"] == ["id", "temperature"]
     assert data["rows"] == 2
     assert "prediction" not in str(data) and "123.45" not in str(data)
-    assert member.get(base + "/membership").json() == {"joined": False}
-    member.post(base + "/join")
-    assert member.get(base + "/membership").json() == {"joined": True}
+    assert member.get(base + "/membership").json()["joined"] is False
+    member.post(base + "/join", json={"accept_rules": True})
+    assert member.get(base + "/membership").json()["joined"] is True
     code = member.post(
         "/api/notebooks", json={"title": "Competition analysis", "code": "print(1)"}
     ).json()

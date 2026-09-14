@@ -7,8 +7,8 @@ a usable UI, persistence, and workflow verification before it is complete.
 
 - [x] Privacy: datasets and notebooks; explicit publication; sharing and revocation.
 - [ ] Version history: immutable notebook and dataset snapshots; restore and pinned inputs.
-- [ ] Competition evaluation: selectable metrics; public/private scores; submission limits; final selection.
-- [ ] Teams: team-owned submissions and leaderboard, membership rules and shared resources.
+- [x] Competition evaluation: selectable metrics; public/private scores; submission limits; final selection ([competitions](competitions.md)).
+- [ ] Teams: team-owned submissions and leaderboard, membership rules and deadlines, shared daily limits and final selections are implemented; shared resources remain.
 - [ ] Evaluation workers: independent job containers, durable queue, cancellation, recovery and limits.
 - [ ] Compute: CPU/GPU configuration, availability checks and usage tracking.
 - [ ] Storage: multiple files, artifact versions, safe previews/downloads, dataset/model attachments.
@@ -25,7 +25,8 @@ deferred until local container acceptance, as requested.
 ## Implemented in the local CPU increment
 
 Notebook save history and restore UI; private dataset/notebook access and sharing;
-RMSE/MAE/Accuracy/binary LogLoss; team-owned submission history and leaderboard;
+a metric registry with public/private leaderboards, daily limits, final selection,
+rules acceptance, timelines, host tools and medals; team-owned submission history and leaderboard;
 a separate CPU evaluation worker with cancellation and restart recovery; immutable
 supplemental dataset/model file versions and downloads. Model URLs are optional.
 
