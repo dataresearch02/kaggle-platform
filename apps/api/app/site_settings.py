@@ -20,6 +20,12 @@ DEFAULTS = {
     "competition_creation": "hosts",
     # Markdown shown to every visitor; empty means no announcement.
     "announcement": "",
+    # Scheduled notebook runs a user may keep (active, paused or disabled).
+    "max_schedules_per_user": 5,
+    # GPU hours per user per week (resets Monday 00:00 UTC); see compute.py.
+    "gpu_weekly_hours": 30,
+    # GPUs Arena may allocate at once. One live GPU session holds a whole card.
+    "gpu_capacity": 1,
 }
 PUBLIC = ("registration_open", "local_login_enabled", "announcement")
 
@@ -43,6 +49,9 @@ class SettingsInput(BaseModel):
     local_login_enabled: Optional[bool] = None
     competition_creation: Optional[Literal["hosts", "everyone"]] = None
     announcement: Optional[str] = Field(default=None, max_length=5000)
+    max_schedules_per_user: Optional[int] = Field(default=None, ge=0, le=100)
+    gpu_weekly_hours: Optional[float] = Field(default=None, ge=0, le=168)
+    gpu_capacity: Optional[int] = Field(default=None, ge=0, le=16)
 
 
 def update_settings(db, data):

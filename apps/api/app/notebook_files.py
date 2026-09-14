@@ -65,6 +65,25 @@ async def prepare_inputs(db, user, hub, folder, document):
         )
     for item in document.get("metadata", {}).get("arena_notebook_inputs", []):
         await copy_input(db, item["id"], user, hub, folder)
+    from .practice_inputs import practice_files
+
+    practice = document.get("metadata", {}).get("arena_practice_inputs", [])
+    for relative, source in practice_files(practice):
+        path = f"{folder}/{relative}"
+        await mkdir(user, hub, str(PurePosixPath(path).parent))
+        hub.expect(
+            await hub.request(
+                "PUT",
+                endpoint(user, path),
+                contents=True,
+                json={
+                    "type": "file",
+                    "format": "base64",
+                    "content": base64.b64encode(source.read_bytes()).decode(),
+                },
+            ),
+            (200, 201),
+        )
 
 
 async def snapshot_outputs(db, notebook, user, hub, folder):
@@ -129,14 +148,21 @@ async def snapshot_outputs(db, notebook, user, hub, folder):
         store_snapshot(db, notebook.id, user.id, filename, content)
 
 
-def collect_job_files(work):
+def collect_job_files(work, extra_excluded=()):
     """Collect successful isolated-job artifacts, excluding evaluation inputs/secrets."""
     import os
     from .isolated_runner import read_result
 
     files = []
     total = 0
-    excluded = {"input", "test.csv", "source.ipynb", "executed.ipynb", "runner.py"}
+    excluded = {
+        "input",
+        "test.csv",
+        "source.ipynb",
+        "executed.ipynb",
+        "runner.py",
+        *extra_excluded,
+    }
     for directory, directories, names in os.walk(work, followlinks=False):
         directories[:] = [
             name

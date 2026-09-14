@@ -414,6 +414,53 @@ def community_backfill(connection):
     )
 
 
+def course_authoring(connection):
+    """Authoring columns for courses. Existing courses stay published, in id order.
+
+    Lesson rows, lesson progress and seeded exercises are created from the legacy
+    lesson JSON by the idempotent learn_content.ensure_learning_content backfill.
+    """
+    add_columns(
+        connection,
+        "courses",
+        [
+            ("owner_id", "INTEGER"),
+            ("difficulty", "VARCHAR(20) NOT NULL DEFAULT 'beginner'"),
+            ("status", "VARCHAR(12) NOT NULL DEFAULT 'published'"),
+            ("position", "INTEGER NOT NULL DEFAULT 0"),
+            ("created_at", "VARCHAR"),
+            ("updated_at", "VARCHAR"),
+            ("published_at", "VARCHAR"),
+        ],
+    )
+    if inspect(connection).has_table("courses"):
+        connection.execute(
+            text(
+                "UPDATE courses SET position = id,"
+                " published_at = COALESCE(published_at, :now)"
+                " WHERE position = 0 AND status = 'published'"
+            ),
+            {"now": now()},
+        )
+
+
+def gpu_allocation_lock(connection):
+    """A settings row that GPU allocation locks (SELECT ... FOR UPDATE); see compute.py."""
+    if not inspect(connection).has_table("site_settings"):
+        return
+    if connection.scalar(
+        text("SELECT 1 FROM site_settings WHERE key = 'gpu_allocation_lock'")
+    ):
+        return
+    connection.execute(
+        text(
+            "INSERT INTO site_settings (key, value, updated_at)"
+            " VALUES ('gpu_allocation_lock', '0', :now)"
+        ),
+        {"now": now()},
+    )
+
+
 MIGRATIONS = (
     ("0001_user_role_status", user_role_status),
     ("0002_moderation_hidden", moderation_hidden),
@@ -425,6 +472,8 @@ MIGRATIONS = (
     ("0008_community_columns", community_columns),
     ("0009_legacy_discussions_to_forum", legacy_discussions_to_forum),
     ("0010_community_backfill", community_backfill),
+    ("0011_course_authoring", course_authoring),
+    ("0012_gpu_allocation_lock", gpu_allocation_lock),
 )
 
 

@@ -59,7 +59,13 @@ export type Item = {
   hidden_reason?: string;
   code?: string;
   duration?: string;
-  lessons?: { title: string; body: string; code: string }[];
+  /** Courses: lesson outline, publication state and learning totals. */
+  lessons?: { id: number; title: string; exercise_count?: number; completed?: boolean }[];
+  status?: 'draft' | 'published';
+  difficulty?: string;
+  summary?: string;
+  lesson_count?: number;
+  exercise_count?: number;
   body?: string;
   framework?: string;
   url?: string;
@@ -157,6 +163,33 @@ export type CompetitionResult = {
   team_id: number | null;
   team_name: string | null;
   finalized_at: string;
+};
+export type Accelerator = 'cpu' | 'gpu';
+/** Weekly GPU quota, shared GPU capacity and the current session accelerator. */
+export type ComputeUsage = {
+  internet: boolean;
+  gpu_available: { session: boolean; background: boolean };
+  gpu_resource: string;
+  gpus_per_workload: number;
+  quota_hours: number;
+  used_hours: number;
+  remaining_hours: number;
+  week_start: string;
+  resets_at: string;
+  capacity: number;
+  in_use: number;
+  active: { kind: string; ref_id: number | null; gpus: number; started_at: string }[];
+  session_accelerator: Accelerator;
+};
+export type Certificate = {
+  code: string;
+  course_id: number;
+  course_title: string;
+  course_available: boolean;
+  issued_at: string;
+  holder: string;
+  holder_name: string;
+  valid: boolean;
 };
 export function formatScore(value: number | null | undefined) {
   return value === null || value === undefined ? '—' : value.toFixed(4);

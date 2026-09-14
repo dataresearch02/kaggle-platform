@@ -77,6 +77,9 @@ def main():
     config["POSTGRES_PORT"] = "5432"
     # The only GPU node (worker1) carries an nvidia.com/gpu NoSchedule taint.
     config["EVALUATION_TOLERATIONS"] = json.dumps(GPU_TOLERATIONS)
+    # Only sessions started with the GPU accelerator option tolerate it; CPU
+    # sessions stay off worker1 unless the scheduler has nowhere else to go.
+    config["NOTEBOOK_GPU_TOLERATIONS"] = json.dumps(GPU_TOLERATIONS)
     hostname = find(items, "Route", "arena")["spec"]["host"]
     config.update({key: value % {"hostname": hostname} for key, value in OIDC.items()})
 

@@ -29,7 +29,7 @@ from .models import (
     User,
 )
 from .notebook_editor import Document, contents
-from .notebook_runtime import HubClient, hub_username, start_session
+from .notebook_runtime import HubClient, ensure_server, hub_username
 from .code_pages import store_publication
 from .kernel_channels import wait_for_kernel
 from .scoring import evaluate
@@ -275,7 +275,7 @@ async def execute_snapshot(job_id, hub=None):
                         DATA_DIR / "uploads" / dataset.storage_key,
                     )
                 )
-        await start_session(user=user, hub=hub)
+        await ensure_server(user, hub)
         deadline = time.monotonic() + 240
         while (await hub.status(user))["state"] != "ready":
             if time.monotonic() > deadline:

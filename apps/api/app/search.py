@@ -109,7 +109,12 @@ def sources(term, user):
             CompetitionPost.body,
         ),
         "courses": source(
-            "courses", Course, Course.title, term, Course.id > 0, Course.description
+            "courses",
+            Course,
+            Course.title,
+            term,
+            Course.status == "published",
+            Course.description,
         ),
         "users": source("users", User, User.username, term, listed_users(user)),
     }
@@ -138,13 +143,13 @@ def describe(db, kind, id):
         "courses": Course,
     }[kind]
     row = db.get(model, id)
-    owner = db.get(User, row.owner_id) if hasattr(row, "owner_id") else None
+    owner = db.get(User, row.owner_id) if getattr(row, "owner_id", None) else None
     url = {
         "competitions": f"#competitions/{id}/overview",
         "datasets": f"#datasets/{id}",
         "notebooks": f"#code/{id}",
         "models": f"#models/{id}",
-        "courses": "#courses",
+        "courses": f"#courses/{id}",
     }.get(kind) or target_url(db, "competition-post", row)
     return {
         "title": row.title,

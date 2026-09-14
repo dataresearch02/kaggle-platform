@@ -36,6 +36,40 @@ def read_result(path, limit):
         return result
 
 
+def stage_inputs(db, user, document, work):
+    """Copy a document's attached inputs into an isolated job directory.
+
+    Shared by competition commits and background notebook runs. Access is checked for
+    the job owner at execution time, so inputs revoked since queueing are refused.
+    """
+    metadata = document.get("metadata", {})
+    for item in metadata.get("arena_inputs", []):
+        dataset = readable(db, item["id"], user)
+        (work / f"arena-input-{dataset.id}.csv").write_bytes(
+            (DATA_DIR / "uploads" / dataset.storage_key).read_bytes()
+        )
+    from .notebook_outputs import readable as readable_output, input_path
+
+    for item in metadata.get("arena_notebook_inputs", []):
+        output = readable_output(db, item["id"], user)
+        target = work / input_path(output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(
+            (DATA_DIR / "notebook-outputs" / output.storage_key).read_bytes()
+        )
+    from .input_sources import resolve_attachment
+
+    for item in metadata.get("arena_input_sources", []):
+        source, files = resolve_attachment(db, user, item)
+        for input_file in files:
+            target = work / source["path"] / input_file.filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(input_file.read(db))
+    from .practice_inputs import stage_practice_inputs
+
+    stage_practice_inputs(metadata.get("arena_practice_inputs", []), work)
+
+
 async def execute(job_id):
     from .notebook_commits import eligible, complete_commit
 
@@ -59,48 +93,38 @@ async def execute(job_id):
             if details
             else "id,temperature,working_day\n7,20,1\n8,10,1\n9,23,0\n"
         )
-        for item in document.get("metadata", {}).get("arena_inputs", []):
-            dataset = readable(db, item["id"], user)
-            (work / f"arena-input-{dataset.id}.csv").write_bytes(
-                (DATA_DIR / "uploads" / dataset.storage_key).read_bytes()
-            )
-        from .notebook_outputs import readable as readable_output, input_path
-
-        for item in document.get("metadata", {}).get("arena_notebook_inputs", []):
-            output = readable_output(db, item["id"], user)
-            target = work / input_path(output)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(
-                (DATA_DIR / "notebook-outputs" / output.storage_key).read_bytes()
-            )
-        from .input_sources import resolve_attachment
-
-        for item in document.get("metadata", {}).get("arena_input_sources", []):
-            source, files = resolve_attachment(db, user, item)
-            for input_file in files:
-                target = work / source["path"] / input_file.filename
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(input_file.read(db))
+        stage_inputs(db, user, document, work)
         (work / "source.ipynb").write_text(json.dumps(document))
         (work / "runner.py").write_text(RUNNER)
+        owner_id = user.id
 
     def active():
         with SessionLocal() as db:
             current = db.get(NotebookCommit, job_id)
             return bool(current and current.status == "running")
 
-    await run(
-        container_name,
-        work,
-        {
-            "PREDICTION_FILE": filename,
-            "ARENA_CELL_TIMEOUT_SECONDS": str(
-                integer("NOTEBOOK_CELL_TIMEOUT_SECONDS", 120)
-            ),
-        },
-        integer("EVALUATION_TIMEOUT_SECONDS", 900),
-        active,
-    )
+    from .compute import gpu_job
+
+    # Commits keep EVALUATION_GPUS; a GPU Job holds capacity but is not charged.
+    async with gpu_job(
+        SessionLocal,
+        owner_id,
+        "commit",
+        job_id,
+        integer("EVALUATION_GPUS", 0, minimum=0, maximum=8),
+    ):
+        await run(
+            container_name,
+            work,
+            {
+                "PREDICTION_FILE": filename,
+                "ARENA_CELL_TIMEOUT_SECONDS": str(
+                    integer("NOTEBOOK_CELL_TIMEOUT_SECONDS", 120)
+                ),
+            },
+            integer("EVALUATION_TIMEOUT_SECONDS", 900),
+            active,
+        )
     if not (work / filename).exists():
         raise ValueError(f"Notebook did not produce {filename}")
     executed = json.loads(read_result(work / "executed.ipynb", 10 * 1024 * 1024))

@@ -73,9 +73,9 @@ oc apply --dry-run=server -f /tmp/arena-openshift.json
 oc apply -f /tmp/arena-openshift.json
 ```
 
-The example reserves the GPU for scheduled evaluation and uses CPU for interactive sessions. Set `--notebook-gpus 1` to enable interactive GPU training. **Each live interactive session holds its GPU**, even while idle. With one RTX 4090, an evaluation requesting that same GPU must wait until the interactive server releases it. Closing an editor does not stop its server. After queuing the commit, use **Run → Save and stop notebook server** to release the interactive GPU, or provide separate GPU capacity. This action stops all of your personal kernels after confirming; save any other open notebooks first. Arena does not silently terminate other notebooks to claim their GPU.
+Interactive sessions are CPU by default. Users choose GPU per session when starting it; the Hub validates the `accelerator` user option and only then requests `NOTEBOOK_GPU_COUNT` GPUs and adds `NOTEBOOK_GPU_TOLERATIONS` (default: tolerate the `nvidia.com/gpu` NoSchedule taint). CPU sessions never request a GPU or tolerate the GPU taint. `--notebook-gpus` (`NOTEBOOK_GPUS`) no longer gives every session a GPU. Weekly GPU quotas and GPU capacity are administrator settings; see [compute](compute.md). **Each live interactive GPU session holds its GPU**, even while idle. With one RTX 4090, an evaluation requesting that same GPU must wait until the interactive server releases it. Closing an editor does not stop its server. After queuing the commit, use **Run → Save and stop notebook server** to release the interactive GPU, or provide separate GPU capacity. This action stops all of your personal kernels after confirming; save any other open notebooks first. Arena does not silently terminate other notebooks to claim their GPU.
 
-Both GPU counts default to zero. The renderer also accepts CPU, memory and timeout parameters. Default OpenShift limits are 2 CPUs, 8 GiB RAM, one hour per cell and two hours per competition Job. Quiet interactive execution sends heartbeat messages every 15 seconds to keep proxy connections alive. Node selectors/tolerations can be configured through `NOTEBOOK_NODE_SELECTOR`, `NOTEBOOK_TOLERATIONS`, `EVALUATION_NODE_SELECTOR` and `EVALUATION_TOLERATIONS` JSON environment values in `arena-config`.
+`EVALUATION_GPUS` (competition commits and benchmarks) defaults to zero; background runs and exercise attempts request a GPU only when selected. The renderer also accepts CPU, memory and timeout parameters. Default OpenShift limits are 2 CPUs, 8 GiB RAM, one hour per cell and two hours per competition Job. Quiet interactive execution sends heartbeat messages every 15 seconds to keep proxy connections alive. Node selectors/tolerations can be configured through `NOTEBOOK_NODE_SELECTOR`, `NOTEBOOK_TOLERATIONS`, `EVALUATION_NODE_SELECTOR` and `EVALUATION_TOLERATIONS` JSON environment values in `arena-config`.
 
 The generated deployment contains API, web, Hub, broker, Services, Route, persistent claims, service accounts, RBAC and runtime NetworkPolicies. PostgreSQL, registry pull secrets, the GPU operator, storage provisioners and backups remain cluster infrastructure prerequisites. Before switching an existing local installation, migrate the PostgreSQL database and platform files together; local Hub SQLite state and bind-mounted personal workspaces must also be migrated deliberately into the new PVC layout.
 
@@ -83,7 +83,7 @@ The generated deployment contains API, web, Hub, broker, Services, Route, persis
 
 1. Confirm PVCs bind and all four platform Deployments become ready. Confirm runtime service accounts have no cluster API privileges.
 2. Run the personal and competition workflows above through the HTTPS portal. Restart a test user's server and confirm saved cells, inputs and model files remain.
-3. In a GPU notebook, execute:
+3. Start a session with **GPU** selected (a CPU session must not request a GPU), then execute:
 
    ```python
    import torch
@@ -105,12 +105,14 @@ The generated deployment contains API, web, Hub, broker, Services, Route, persis
 
 4. Commit a competition notebook containing a CUDA assertion and valid predictions. Confirm the execution Pod requests a GPU, contains no database/Hub secret environment variables, has no token mount, and cannot reach the network. Confirm score, published executed cells and outputs appear only after success.
 5. Test missing predictions, Python errors, cancellation and timeout; none should publish a successful score. Stop the broker during a test run, restart it, and check the interrupted status and pending queue.
+6. Queue a GPU background run and a GPU exercise attempt while a GPU session runs: both wait; after stopping the session they run and appear in **Administration → Compute**. Check that a CPU run Pod has no GPU request and no GPU toleration.
 
 Local API, manifest-contract and browser checks do not replace this acceptance run. No OpenShift cluster or NVIDIA GPU is available in the current workspace, so cluster scheduling, GPU execution and CSI behavior have not been verified here.
 
 ## Checks completed in this workspace
 
 - 154 API tests passed, including GPU Job request/isolation contracts, cleanup on failure/cancellation, runtime limits and rollback when output storage fails.
+- Learn & compute milestone: 262 API tests passed, including per-session GPU `user_options` validated by the Hub configuration, CPU sessions and Jobs without GPU requests or GPU tolerations, quota and capacity refusals, and schedule idempotency. All nine seeded exercise solutions passed, and their starters failed, in the runtime image through the attempt runner with no network. GPU scheduling on the target cluster remains to be verified.
 - The web production build passed.
 - Browser acceptance passed for standalone input attachment/execution/persistence and competition join/first-save commit/failure/success/publication isolation. The existing real benchmark evaluation also passed through the shared runtime broker.
 - The built Hub image accepted the KubeSpawner 7 configuration. The OpenShift web image's entrypoint and nginx configuration passed under arbitrary UID 123456 with group 0.

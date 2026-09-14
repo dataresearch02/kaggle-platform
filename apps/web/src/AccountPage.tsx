@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react';
+import { Award } from 'lucide-react';
 import {
   api,
   apiPage,
   oidcLoginPath,
   ssoErrorMessage,
+  type Certificate,
   type User,
   type CompetitionResult,
 } from './api';
+import GpuUsageMeter, { useComputeUsage } from './GpuUsageMeter';
 import { Avatar, type Profile } from './AccountMenu';
 import ActivityFeed from './ActivityFeed';
 import {
@@ -90,6 +93,8 @@ export default function AccountPage({
   const profileTab = (publicView && route.split('/')[2]) || 'overview';
   const [profile, setProfile] = useState<Profile | null>(null);
   const [results, setResults] = useState<CompetitionResult[]>([]);
+  const [certificates, setCertificates] = useState<Certificate[]>([]);
+  const usage = useComputeUsage(0, !publicView && section === 'settings' && !!user);
   const [progression, setProgression] = useState<Progression | null>(null);
   const [follows, setFollows] = useState<Follows | null>(null);
   const [people, setPeople] = useState<{ items: Person[]; total: number }>({ items: [], total: 0 });
@@ -126,6 +131,12 @@ export default function AccountPage({
           if (active) setResults([]);
         });
     if (publicView) {
+      setCertificates([]);
+      api<Certificate[]>(`/profiles/${section}/certificates`)
+        .then((rows) => {
+          if (active) setCertificates(rows);
+        })
+        .catch(() => {});
       api<Progression>(`/profiles/${section}/progression`)
         .then((row) => {
           if (active) setProgression(row);
@@ -368,6 +379,21 @@ export default function AccountPage({
                   </article>
                 ))}
               </div>
+            </section>
+          )}
+          {publicView && profile && profileTab === 'overview' && certificates.length > 0 && (
+            <section className="account-card profile-certificates">
+              <h2>Certificates</h2>
+              <ul>
+                {certificates.map((row) => (
+                  <li key={row.code}>
+                    <a href={`#certificates/${row.code}`}>
+                      <Award size={16} aria-hidden="true" /> {row.course_title}
+                    </a>{' '}
+                    <small>{new Date(row.issued_at).toLocaleDateString()}</small>
+                  </li>
+                ))}
+              </ul>
             </section>
           )}
           {publicView && profile && profileTab === 'activity' && (
@@ -620,6 +646,10 @@ export default function AccountPage({
                   Save notification preferences
                 </button>
               </form>
+              <section className="account-card">
+                <h2>Compute</h2>
+                <GpuUsageMeter usage={usage} />
+              </section>
               {identities && (
                 <section className="account-card linked-identities">
                   <h2>Keycloak sign-in</h2>

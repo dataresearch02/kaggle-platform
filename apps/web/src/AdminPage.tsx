@@ -11,7 +11,15 @@ import {
   type ReportKind,
 } from './Moderation';
 
-export const adminTabs = ['users', 'reports', 'hidden', 'community', 'audit', 'settings'] as const;
+export const adminTabs = [
+  'users',
+  'reports',
+  'hidden',
+  'community',
+  'audit',
+  'compute',
+  'settings',
+] as const;
 export type AdminTab = (typeof adminTabs)[number];
 const tabLabels: Record<AdminTab, string> = {
   users: 'Users',
@@ -19,6 +27,7 @@ const tabLabels: Record<AdminTab, string> = {
   hidden: 'Hidden content',
   community: 'Community',
   audit: 'Audit log',
+  compute: 'Compute',
   settings: 'Settings',
 };
 
@@ -70,7 +79,26 @@ type AuditEntry = {
   detail: Record<string, unknown>;
   created_at: string;
 };
-type Settings = Site & { competition_creation: 'hosts' | 'everyone' };
+type Settings = Site & {
+  competition_creation: 'hosts' | 'everyone';
+  max_schedules_per_user: number;
+  gpu_weekly_hours: number;
+  gpu_capacity: number;
+};
+type ComputeReport = {
+  capacity: number;
+  in_use: number;
+  quota_hours: number;
+  week_start: string;
+  resets_at: string;
+  users: {
+    user_id: number;
+    username: string;
+    used_hours: number;
+    remaining_hours: number;
+    active: string[];
+  }[];
+};
 
 const PAGE_SIZE = 25;
 const date = (value: string | null) => (value ? new Date(value).toLocaleString() : '');
@@ -210,6 +238,7 @@ export default function AdminPage({
         {tab === 'hidden' && <HiddenTab />}
         {tab === 'community' && <CommunityTab />}
         {tab === 'audit' && <AuditTab />}
+        {tab === 'compute' && <ComputeTab />}
         {tab === 'settings' && <SettingsTab siteChanged={siteChanged} />}
       </div>
     </section>
@@ -863,6 +892,51 @@ function SettingsTab({ siteChanged }: { siteChanged: (site: PublicSettings) => v
         </label>
       </fieldset>
       <fieldset>
+        <legend>Compute</legend>
+        <label>
+          Weekly GPU hours per user
+          <input
+            type="number"
+            min={0}
+            max={168}
+            step={0.5}
+            required
+            value={settings.gpu_weekly_hours}
+            onChange={(event) => change({ gpu_weekly_hours: Number(event.target.value) })}
+          />
+          <small>
+            Interactive GPU sessions, background runs and exercise checks count. Resets Monday
+            00:00 UTC.
+          </small>
+        </label>
+        <label>
+          GPU capacity
+          <input
+            type="number"
+            min={0}
+            max={16}
+            required
+            value={settings.gpu_capacity}
+            onChange={(event) => change({ gpu_capacity: Number(event.target.value) })}
+          />
+          <small>
+            GPUs Arena allocates at once; 0 disables GPU work. One live GPU session holds a whole
+            card.
+          </small>
+        </label>
+        <label>
+          Scheduled runs per user
+          <input
+            type="number"
+            min={0}
+            max={100}
+            required
+            value={settings.max_schedules_per_user}
+            onChange={(event) => change({ max_schedules_per_user: Number(event.target.value) })}
+          />
+        </label>
+      </fieldset>
+      <fieldset>
         <legend>Announcement</legend>
         <label>
           Markdown shown to every visitor (leave empty for none)
@@ -893,6 +967,70 @@ function SettingsTab({ siteChanged }: { siteChanged: (site: PublicSettings) => v
         {busy ? 'Saving…' : 'Save settings'}
       </button>
     </form>
+  );
+}
+
+function ComputeTab() {
+  const [report, setReport] = useState<ComputeReport | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    api<ComputeReport>('/admin/compute/usage')
+      .then((row) => {
+        if (active) setReport(row);
+      })
+      .catch((e) => {
+        if (active) setError(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+  if (!report) return <p role={error ? 'alert' : 'status'}>{error || 'Loading GPU usage…'}</p>;
+  return (
+    <>
+      <p>
+        GPUs in use:{' '}
+        <strong>
+          {report.in_use} of {report.capacity}
+        </strong>{' '}
+        · weekly quota {report.quota_hours} h per user · resets{' '}
+        {new Date(report.resets_at).toLocaleString()}
+      </p>
+      <p className="muted">
+        A live interactive GPU session holds a whole card, even while idle. Ask people to stop GPU
+        sessions they are not using. Change limits under Settings.
+      </p>
+      <div className="table-scroll">
+        <table className="admin-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Used this week</th>
+              <th>Remaining</th>
+              <th>Holding a GPU now</th>
+            </tr>
+          </thead>
+          <tbody>
+            {report.users.map((row) => (
+              <tr key={row.user_id}>
+                <td>
+                  <a href={`#profile/${row.username}`}>{row.username}</a>
+                </td>
+                <td>{row.used_hours.toFixed(1)} h</td>
+                <td>{row.remaining_hours.toFixed(1)} h</td>
+                <td>{row.active.length ? row.active.join(', ') : '—'}</td>
+              </tr>
+            ))}
+            {!report.users.length && (
+              <tr>
+                <td colSpan={4}>No GPU usage this week.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 

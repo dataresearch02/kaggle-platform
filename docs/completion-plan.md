@@ -10,17 +10,19 @@ a usable UI, persistence, and workflow verification before it is complete.
 - [x] Competition evaluation: selectable metrics; public/private scores; submission limits; final selection ([competitions](competitions.md)).
 - [ ] Teams: team-owned submissions and leaderboard, membership rules and deadlines, shared daily limits and final selections are implemented; shared resources remain.
 - [ ] Evaluation workers: independent job containers, durable queue, cancellation, recovery and limits.
-- [ ] Compute: CPU/GPU configuration, availability checks and usage tracking.
+- [x] Compute: CPU/GPU selection per session, run and attempt; availability checks; GPU usage tracking, weekly quotas and capacity ([compute](compute.md)).
 - [ ] Storage: multiple files, artifact versions, safe previews/downloads, dataset/model attachments.
 - [ ] Accounts: recovery and verification. Roles, suspension, reports, moderation and the audit log are implemented ([administration](administration.md)).
 - [x] Community: forums, notifications, following, votes, activity feeds, search, profiles with medals, tiers and rankings ([community](community.md)).
-- [ ] Learning: graded exercises, hints and assessments.
-- [ ] Automation: scheduled notebooks and supported API credentials.
+- [x] Learning: course authoring, graded exercises, hints and certificates ([learn](learn.md)). Quizzes and timed assessments are not implemented.
+- [ ] Automation: background Save & Run All and scheduled notebooks are implemented ([compute](compute.md)); supported API credentials beyond expiring account tokens remain.
 - [ ] Operations: backup/restore verification, observability and deployment readiness. Additive startup schema migrations are implemented.
 
 GPU execution needs GPU hardware and a configured container runtime; configuration
-alone does not count as a verified GPU implementation. OpenShift deployment stays
-deferred until local container acceptance, as requested.
+alone does not count as a verified GPU implementation. GPU selection, quotas and
+capacity are implemented and covered by API tests with mocked Kubernetes and Hub
+calls; execution on the target cluster's GPU still needs the acceptance run in
+[the OpenShift GPU guide](openshift-gpu.md).
 
 ## Implemented in the local CPU increment
 
@@ -32,5 +34,5 @@ a separate CPU evaluation worker with cancellation and restart recovery; immutab
 supplemental dataset/model file versions and downloads. Model URLs are optional.
 
 The broader checklist remains open where features are only partially implemented.
-GPU execution is explicitly deferred, not counted as completed. See
+See [learn](learn.md) and [compute](compute.md) for the Learn & compute milestone, and
 [local CPU behavior and limits](local-cpu.md) for acceptance scope.

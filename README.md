@@ -69,7 +69,7 @@ Creator metadata, test data, answers and scores persist in PostgreSQL. A new `ch
 ## First end-to-end experiment
 
 1. Register an account. Usernames use letters, numbers, and underscores; passwords need at least 10 characters.
-2. Open **More → Learn → Python foundations**, read a lesson, and mark it complete.
+2. Open **More → Learn → Python foundations**, read a lesson, solve its exercise with **Run checks**, and mark the lesson complete. Pass every exercise in a course to earn a printable certificate.
 3. Download **Datasets → City bikes & daily demand**.
 4. Open **Competitions → Predict bike demand**, join (read and accept the rules), and download test data and the sample submission.
 5. Create a notebook, or open a saved notebook and click **Start session**. Use Python to load a dataset download URL, then train a baseline in the Arena editor. The Intro to machine learning course includes example code.
@@ -172,9 +172,9 @@ The API also exposes `/api/health`. POST/PUT requests require `X-Arena-Client: w
 
 - New datasets and notebooks are private by default, with explicit visibility and sharing controls. Notebook history stores immutable saves and supports restoration into the editor. Catalog lists are paginated with `offset`/`limit` (at most 100 per request) and an `X-Total-Count` header.
 - Competitions have a metric registry, rules acceptance with revisions, a start/entry/merger/end timeline, public and private leaderboards, daily submission limits, final submission selection, host tools (submissions, exports, rescoring, disqualification, shake-up) and finalization with Kaggle-style medals ([competitions](docs/competitions.md)). Automated leakage and duplicate-account detection are not implemented.
-- Interactive notebooks use the native Arena editor and per-user Jupyter containers. Compose evaluates competition commits through a separate CPU worker with disposable offline containers, cancellation, resource limits and restart recovery. OpenShift can use KubeSpawner and GPU-enabled Kubernetes Jobs; see [the core workflow and OpenShift GPU guide](docs/openshift-gpu.md).
+- Interactive notebooks use the native Arena editor and per-user Jupyter containers on CPU or GPU. The evaluation worker runs competition commits, background Save & Run All, scheduled runs and exercise checks in disposable offline containers or Jobs with cancellation, resource limits and restart recovery; weekly GPU quotas and capacity are administrator settings ([compute](docs/compute.md)). OpenShift can use KubeSpawner and GPU-enabled Kubernetes Jobs; see [the core workflow and OpenShift GPU guide](docs/openshift-gpu.md).
 - Dataset and model details support immutable additional file versions and downloads (10 MB per file). Model cards can contain hosted files and optional external links. Notebook inputs pin file versions. Large artifact storage and hosted inference remain incomplete.
-- Courses contain lessons and per-user completion tracking; exercises are not automatically graded.
+- Hosts and administrators author courses with Markdown lessons and graded coding exercises (hidden checkers, hints, solutions revealed after passing or several attempts). Completing every exercise issues a verifiable certificate ([learn](docs/learn.md)).
 - Accounts, site forums, competition/dataset/model discussions with editing, locking and @mentions, in-app notifications, votes, follows, activity feeds, site search, medals, tiers and rankings are implemented ([community](docs/community.md)), with `user`/`host`/`admin` roles, account suspension, site settings, content reports, moderation and an audit log; see [administration](docs/administration.md). Notifications are in-app only (no email). Email verification, self-service password recovery, OAuth, quotas and rate limiting remain future work.
 - Schema creation, additive schema migrations, starter seeding and the offline practice competition import run at startup. Use one API process while they run; coordinated bootstrap is required before scaling.
 - The container runtime is intended for a trusted local community. The native editor sanitizes outputs and blocks direct Jupyter UI access; runtime network isolation and resource quotas still need hardening before accepting hostile workloads. The Hub and the trusted evaluation broker mount the container-runtime socket; the API and evaluation job containers do not. Compose binds published ports to loopback. Public deployment needs HTTPS, secure cookies (`COOKIE_SECURE=true`), explicit origins, managed secrets, migrations, backups, upload policy, abuse controls, and isolated compute.
@@ -222,8 +222,9 @@ Selected rows fill the sidebar width with a right border. Your work is the final
 content item. View Active Events stays at the bottom and opens a dialog with
 queued/running notebook competition evaluations, refreshed every five seconds.
 The main sidebar's empty-state actions start notebook or benchmark creation.
-The event list is private to the signed-in user; synchronous uploads and future
-scheduling features are not represented as background jobs.
+The event list is private to the signed-in user; synchronous uploads are not
+represented as background jobs. Background notebook runs and schedules are shown in
+the notebook panel ([compute](docs/compute.md)).
 
 See the [main workflow review](docs/logic-review.md) for verified behavior, fixes found during the review, and remaining functional limits.
 
@@ -246,7 +247,7 @@ In the notebook editor, use **File → Import notebook (.ipynb)** to replace the
 
 ### Notebook version and sharing panels
 
-**Save Version** opens a right-side panel. Create a named version with tags, or select a saved version to edit its labels without changing cells or outputs. Choose **Save notebook only**, or **Save & Run All (Commit)** for an eligible competition notebook. Competition commits run through the isolated evaluation worker; competitions without local scoring answers cannot commit. The File menu and keyboard save shortcut still save the working notebook directly.
+**Save Version** opens a right-side panel. Create a named version with tags, or select a saved version to edit its labels without changing cells or outputs. Choose **Save notebook only**, **Save & Run All (background)** to run the saved version in an isolated runtime and add the executed version to the history, or **Save & Run All (Commit)** for an eligible competition notebook. Competition commits run through the isolated evaluation worker; competitions without local scoring answers cannot commit. The File menu and keyboard save shortcut still save the working notebook directly.
 
 **Share** opens private/public visibility, viewer invitations, current group-member selection, and comment settings. Changes apply together on Save. Viewers can read and fork, while only the owner can edit. Public sharing uses the saved snapshot and respects competition evaluation requirements. Group selection creates individual invitations; it is not a live group access rule.
 

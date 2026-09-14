@@ -170,12 +170,114 @@ class Course(Base):
     __tablename__ = "courses"
     id = Column(Integer, primary_key=True)
     title = Column(String(160), nullable=False)
+    # The course summary.
     description = Column(Text, nullable=False)
     duration = Column(String(40), nullable=False)
-    lessons = Column(Text, nullable=False)
+    # Legacy lesson JSON, converted into course_lessons by learn_content.py.
+    lessons = Column(Text, nullable=False, default="[]")
+    # Null for seeded and legacy courses, which administrators manage.
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    difficulty = Column(
+        String(20), nullable=False, default="beginner", server_default="beginner"
+    )
+    # New courses start as drafts; courses that predate authoring were published.
+    status = Column(
+        String(12), nullable=False, default="draft", server_default="published"
+    )
+    position = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(String, default=now)
+    updated_at = Column(String, nullable=True)
+    published_at = Column(String, nullable=True)
+
+
+class CourseLesson(Base):
+    __tablename__ = "course_lessons"
+    id = Column(Integer, primary_key=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+    position = Column(Integer, nullable=False, default=0)
+    title = Column(String(160), nullable=False)
+    # Markdown, rendered with the sanitized Markdown component.
+    body = Column(Text, nullable=False, default="")
+    created_at = Column(String, default=now)
+    updated_at = Column(String, nullable=True)
+
+
+class CourseExercise(Base):
+    """A graded coding exercise. Checker and solution never reach learners early."""
+
+    __tablename__ = "course_exercises"
+    id = Column(Integer, primary_key=True)
+    lesson_id = Column(
+        Integer, ForeignKey("course_lessons.id"), nullable=False, index=True
+    )
+    position = Column(Integer, nullable=False, default=0)
+    title = Column(String(160), nullable=False)
+    prompt = Column(Text, nullable=False)
+    starter_code = Column(Text, nullable=False, default="")
+    # JSON list of progressive hints, revealed one at a time.
+    hints = Column(Text, nullable=False, default="[]")
+    solution = Column(Text, nullable=False)
+    checker = Column(Text, nullable=False)
+    # Reveal the solution after this many finished attempts; 0 only after passing.
+    reveal_after = Column(Integer, nullable=False, default=3)
+    # JSON list of practice pack slugs copied to input/<slug>/.
+    inputs = Column(Text, nullable=False, default="[]")
+    created_at = Column(String, default=now)
+    updated_at = Column(String, nullable=True)
+
+
+class LessonProgress(Base):
+    __tablename__ = "lesson_progress"
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    lesson_id = Column(Integer, ForeignKey("course_lessons.id"), primary_key=True)
+    completed_at = Column(String, default=now)
+
+
+class ExerciseProgress(Base):
+    __tablename__ = "exercise_progress"
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    exercise_id = Column(Integer, ForeignKey("course_exercises.id"), primary_key=True)
+    # Finished (passed or failed) attempts; infrastructure failures do not count.
+    attempts = Column(Integer, nullable=False, default=0)
+    hints_revealed = Column(Integer, nullable=False, default=0)
+    passed_at = Column(String, nullable=True)
+    updated_at = Column(String, default=now, onupdate=now)
+
+
+class ExerciseAttempt(Base):
+    __tablename__ = "exercise_attempts"
+    id = Column(Integer, primary_key=True)
+    exercise_id = Column(
+        Integer, ForeignKey("course_exercises.id"), nullable=False, index=True
+    )
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    code = Column(Text, nullable=False)
+    accelerator = Column(String(3), nullable=False, default="cpu")
+    # queued, running, passed or failed.
+    status = Column(String(12), nullable=False, default="queued", index=True)
+    message = Column(Text, nullable=False, default="")
+    stdout = Column(Text, nullable=False, default="")
+    error = Column(Text, nullable=False, default="")
+    created_at = Column(String, default=now)
+    started_at = Column(String, nullable=True)
+    finished_at = Column(String, nullable=True)
+
+
+class Certificate(Base):
+    __tablename__ = "certificates"
+    __table_args__ = (UniqueConstraint("user_id", "course_id"),)
+    id = Column(Integer, primary_key=True)
+    code = Column(String(40), nullable=False, unique=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
+    # Kept as issued, even if the course is later renamed.
+    course_title = Column(String(160), nullable=False)
+    issued_at = Column(String, default=now)
 
 
 class Progress(Base):
+    """Legacy per-index lesson completion; see LessonProgress."""
+
     __tablename__ = "progress"
     __table_args__ = (UniqueConstraint("user_id", "course_id", "lesson_index"),)
     id = Column(Integer, primary_key=True)
@@ -728,6 +830,15 @@ class NotebookDraftInput(Base):
     source = Column(Text, nullable=False)
 
 
+class ContentReceipt(Base):
+    """A completed one-time content upgrade, such as the learn_content.py backfills."""
+
+    __tablename__ = "content_receipts"
+    key = Column(String(120), primary_key=True)
+    detail = Column(Text, nullable=False, default="{}")
+    created_at = Column(String, default=now)
+
+
 class SchemaMigration(Base):
     """Applied additive schema migrations; see migrations.py."""
 
@@ -896,6 +1007,92 @@ class Follow(Base):
     follower_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
     followee_id = Column(Integer, ForeignKey("users.id"), primary_key=True, index=True)
     created_at = Column(String, default=now)
+
+
+class NotebookRun(Base):
+    """A background Save & Run All of a saved notebook version; see notebook_runs.py."""
+
+    __tablename__ = "notebook_runs"
+    # One run per schedule slot, so restarts cannot enqueue the same slot twice.
+    __table_args__ = (UniqueConstraint("schedule_id", "scheduled_for"),)
+    id = Column(Integer, primary_key=True)
+    notebook_id = Column(
+        Integer, ForeignKey("notebooks.id"), nullable=False, index=True
+    )
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # The saved version that was run; null for legacy notebooks without versions.
+    version_id = Column(Integer, nullable=True)
+    executed_version_id = Column(Integer, nullable=True)
+    document = Column(Text, nullable=False)
+    # queued, running, succeeded, failed, cancelled or timed_out.
+    status = Column(String(12), nullable=False, default="queued", index=True)
+    accelerator = Column(String(3), nullable=False, default="cpu")
+    # "manual" or "schedule".
+    trigger = Column(String(10), nullable=False, default="manual")
+    schedule_id = Column(Integer, nullable=True, index=True)
+    scheduled_for = Column(Float, nullable=True)
+    log = Column(Text, nullable=False, default="")
+    error = Column(Text, nullable=False, default="")
+    output_files = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=now)
+    started_at = Column(String, nullable=True)
+    finished_at = Column(String, nullable=True)
+
+
+class NotebookSchedule(Base):
+    __tablename__ = "notebook_schedules"
+    id = Column(Integer, primary_key=True)
+    notebook_id = Column(
+        Integer, ForeignKey("notebooks.id"), nullable=False, index=True
+    )
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # "daily" and "weekly" run at time_utc; "hourly" runs every interval_hours.
+    frequency = Column(String(10), nullable=False)
+    time_utc = Column(String(5), nullable=False, default="00:00")
+    # 0 is Monday, as in datetime.weekday().
+    weekday = Column(Integer, nullable=False, default=0)
+    interval_hours = Column(Integer, nullable=False, default=24)
+    accelerator = Column(String(3), nullable=False, default="cpu")
+    # active, paused or disabled (after repeated failures).
+    status = Column(String(10), nullable=False, default="active")
+    consecutive_failures = Column(Integer, nullable=False, default=0)
+    # Epoch seconds (UTC). Hourly schedules count intervals from anchor_at.
+    next_run_at = Column(Float, nullable=True, index=True)
+    anchor_at = Column(Float, nullable=False)
+    disabled_reason = Column(Text, nullable=False, default="")
+    created_at = Column(String, default=now)
+    updated_at = Column(String, default=now, onupdate=now)
+
+
+class GpuUsage(Base):
+    """One GPU allocation; open rows (ended_at null) hold GPU capacity."""
+
+    __tablename__ = "gpu_usage"
+    __table_args__ = (Index("ix_gpu_usage_user_started", "user_id", "started_at"),)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # session, run or attempt (charged to the weekly quota); commit or benchmark.
+    kind = Column(String(12), nullable=False)
+    ref_id = Column(Integer, nullable=True)
+    gpus = Column(Integer, nullable=False, default=1)
+    # Epoch seconds (UTC).
+    started_at = Column(Float, nullable=False)
+    ended_at = Column(Float, nullable=True, index=True)
+    # Last time the Hub reported an interactive GPU session running.
+    last_seen_at = Column(Float, nullable=True)
+    created_at = Column(String, default=now)
+
+
+class NotebookDraftExercise(Base):
+    """Exercise whose prompt and starter code seed a new notebook draft."""
+
+    __tablename__ = "notebook_draft_exercises"
+    draft_id = Column(
+        String(32),
+        ForeignKey("notebook_drafts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    exercise_id = Column(Integer, ForeignKey("course_exercises.id"), nullable=False)
 
 
 class UserProgression(Base):

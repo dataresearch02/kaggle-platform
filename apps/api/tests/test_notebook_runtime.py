@@ -99,6 +99,8 @@ def test_separate_private_copies_and_no_template_overwrite(member, hub):
         "/jupyter/user/arena-3/lab",
         "/jupyter/user/arena-3/api/kernels/1/channels",
         "/jupyter/hub/api/users",
+        "/jupyter/hub/spawn",
+        "/jupyter/hub/spawn/arena-2",
         "/jupyter/user/arena-2/../arena-3/lab",
         "/jupyter/user/arena-2/%2e%2e/arena-3/lab",
         "/jupyter/user/arena-2/%252e%252e/arena-3/lab",

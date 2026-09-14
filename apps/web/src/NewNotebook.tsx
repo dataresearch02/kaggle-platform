@@ -8,16 +8,21 @@ export default function NewNotebook({
   saved,
   competitionId,
   inputSource,
+  exerciseId,
+  initialTitle,
 }: {
   close: () => void;
   saved: () => void;
   competitionId?: number;
   inputSource?: { kind: 'dataset' | 'model'; id: number };
+  /** Seeds the draft with an exercise prompt, starter code and practice data. */
+  exerciseId?: number;
+  initialTitle?: string;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const draft = useRef<string | undefined>(undefined);
   const [draftId, setDraftId] = useState('');
-  const [title, setTitle] = useState('Untitled notebook');
+  const [title, setTitle] = useState(initialTitle || 'Untitled notebook');
   const [error, setError] = useState('');
   const [permanent, setPermanent] = useState(false);
   const [savedNotebookId, setSavedNotebookId] = useState(0);
@@ -45,6 +50,7 @@ export default function NewNotebook({
       parameters.set('source_kind', inputSource.kind);
       parameters.set('source_id', String(inputSource.id));
     }
+    if (exerciseId) parameters.set('exercise_id', String(exerciseId));
     void api<{ id: string }>(`/notebook-drafts?${parameters}`, { method: 'POST' })
       .then(({ id }) => {
         if (alive) {

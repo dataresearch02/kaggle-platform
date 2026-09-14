@@ -50,6 +50,7 @@ KINDS = {
     "follow": "New followers",
     "result": "Your competition results and medals",
     "report": "Reports you made that were resolved",
+    "run": "Failed scheduled notebook runs and disabled schedules",
 }
 # When one event concerns a recipient in several ways, the first kind wins.
 PRIORITY = ("mention", "reply", "comment", "watch")
@@ -221,6 +222,13 @@ def message(kind, actor, count, title, detail):
         "follow": f"{who} started following you",
         "report": "A report you made was resolved",
     }.get(kind, "")
+    if kind == "run":
+        text = (
+            "Your notebook schedule was disabled after repeated failures"
+            if detail.get("event") == "disabled"
+            else "A scheduled notebook run "
+            + ("timed out" if detail.get("status") == "timed_out" else "failed")
+        )
     if kind == "result":
         medal = detail.get("medal")
         text = f"You finished #{detail.get('rank')} of {detail.get('team_count')}" + (

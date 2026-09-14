@@ -52,6 +52,8 @@ import NewNotebook from './NewNotebook';
 import CompetitionPage, { competitionTabs, type CompetitionTab } from './CompetitionPage';
 import { RulesSummary } from './CompetitionRules';
 import YourWork, { type WorkItem, type WorkKind } from './YourWork';
+import CoursePage, { courseRouteFromHash } from './CoursePages';
+import CertificatePage, { certificateRouteFromHash } from './CertificatePage';
 
 const PAGE_SIZE = 24;
 const ANNOUNCEMENT_KEY = 'arena-announcement-dismissed';
@@ -211,11 +213,15 @@ export default function App() {
       ? 'notebooks'
       : competitionRouteFromHash()
         ? 'competitions'
-        : nav.some((n) => n.id === p)
-          ? (p as Page)
-          : 'home';
+        : courseRouteFromHash() || certificateRouteFromHash()
+          ? 'courses'
+          : nav.some((n) => n.id === p)
+            ? (p as Page)
+            : 'home';
   });
   const [codeRoute, setCodeRoute] = useState(codeRouteFromHash);
+  const [courseRoute, setCourseRoute] = useState(courseRouteFromHash);
+  const [certificateRoute, setCertificateRoute] = useState(certificateRouteFromHash);
   const [competitionRoute, setCompetitionRoute] = useState(competitionRouteFromHash);
   const [user, setUser] = useState<User | null>(null);
   const [items, setItems] = useState<Item[]>([]);
@@ -306,6 +312,8 @@ export default function App() {
     const handler = () => {
       if (openLogin()) return;
       setResourceRoute(resourceRouteFromHash());
+      setCourseRoute(courseRouteFromHash());
+      setCertificateRoute(certificateRouteFromHash());
       const search = searchRouteFromHash();
       setSearchRoute(search);
       if (search) {
@@ -354,6 +362,15 @@ export default function App() {
         setMobile(false);
         return;
       }
+      if (courseRouteFromHash() || certificateRouteFromHash()) {
+        setCompetitionRoute(null);
+        setPage('courses');
+        setMoreOpen(true);
+        setSelected(null);
+        setCreating(false);
+        setMobile(false);
+        return;
+      }
       const route = competitionRouteFromHash();
       setCompetitionRoute(route);
       if (route) {
@@ -397,7 +414,9 @@ export default function App() {
       searchRoute ||
       resourceRoute ||
       competitionRoute ||
-      codeRoute
+      codeRoute ||
+      courseRoute ||
+      certificateRoute
     )
       return;
     let active = true;
@@ -448,6 +467,8 @@ export default function App() {
     competitionSort,
     catalogSort,
     searchRoute,
+    courseRoute?.id,
+    certificateRoute,
   ]);
   useEffect(() => {
     if (notice) {
@@ -519,6 +540,8 @@ export default function App() {
     setCatalogSort('newest');
     setCodeRoute(null);
     setCompetitionRoute(null);
+    setCourseRoute(null);
+    setCertificateRoute(null);
     setCompetitionStatus('all');
     setCompetitionCategory('');
     setCompetitionSort('newest');
@@ -530,6 +553,20 @@ export default function App() {
     setCreating(false);
     setQuery('');
     setMobile(false);
+  }
+  async function createCourse() {
+    try {
+      const course = await api<Item>('/courses', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: 'Untitled course',
+          summary: 'Describe what learners will be able to do.',
+        }),
+      });
+      location.hash = `courses/${course.id}/edit`;
+    } catch (e) {
+      setNotice((e as Error).message);
+    }
   }
   function requireAuth(action: () => void) {
     if (user) action();
@@ -550,6 +587,10 @@ export default function App() {
     }
     if (page === 'competitions' || page === 'home') {
       location.hash = `competitions/${item.id}/overview`;
+      return;
+    }
+    if (page === 'courses') {
+      location.hash = `courses/${item.id}`;
       return;
     }
     try {
@@ -723,6 +764,15 @@ export default function App() {
               user={user}
               signIn={() => setAuth('login')}
               back={() => go('competitions')}
+            />
+          ) : certificateRoute ? (
+            <CertificatePage code={certificateRoute} />
+          ) : courseRoute ? (
+            <CoursePage
+              key={`${courseRoute.id}-${courseRoute.lessonId}-${courseRoute.edit}-${user?.id}`}
+              {...courseRoute}
+              user={user}
+              signIn={() => setAuth('login')}
             />
           ) : resourceRoute ? (
             <ResourcePage
@@ -918,6 +968,12 @@ export default function App() {
                             : page === 'models'
                               ? 'Add model card'
                               : 'New notebook'}
+                      </button>
+                    )}
+                    {page === 'courses' && (user?.role === 'host' || user?.role === 'admin') && (
+                      <button className="button" onClick={() => void createCourse()}>
+                        <Plus size={17} />
+                        Create course
                       </button>
                     )}
                   </div>
@@ -1234,23 +1290,19 @@ function Card({
           <div className="art-pattern" />
         )}
         <span className="card-category">
-          {item.category ||
-            item.framework ||
-            (page === 'datasets'
-              ? 'CSV DATASET'
-              : page === 'courses'
-                ? 'FREE COURSE'
-                : page === 'notebooks'
-                  ? 'PYTHON'
-                  : 'COMMUNITY')}
+          {page === 'courses'
+            ? `${item.status === 'draft' ? 'DRAFT · ' : ''}${(item.difficulty || 'course').toUpperCase()}`
+            : item.category ||
+              item.framework ||
+              (page === 'datasets' ? 'CSV DATASET' : page === 'notebooks' ? 'PYTHON' : 'COMMUNITY')}
         </span>
       </div>
       <div className="card-body">
         <div className="card-owner">
-          {item.owner
-            ? `by ${item.owner}`
-            : page === 'courses'
-              ? `${item.lessons?.length} lessons · ${item.duration}`
+          {page === 'courses'
+            ? `${item.lesson_count ?? item.lessons?.length ?? 0} lessons · ${item.exercise_count ?? 0} exercises · ${item.duration}`
+            : item.owner
+              ? `by ${item.owner}`
               : 'Arena · Learning challenge'}
         </div>
         <h3>{item.title}</h3>
@@ -1446,8 +1498,6 @@ function Detail({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [code, setCode] = useState(item.code || '');
-  const [lesson, setLesson] = useState(0);
-  const [progress, setProgress] = useState<number[]>([]);
   const [comments, setComments] = useState<{ id: number; owner: string; body: string }[]>([]);
   const [submissions, setSubmissions] = useState<{ id: number; filename: string; score: number }[]>(
     [],
@@ -1455,14 +1505,6 @@ function Detail({
   const [acceptRules, setAcceptRules] = useState(false);
   useEffect(() => {
     let active = true;
-    if (page === 'courses' && user)
-      api<number[]>(`/courses/${item.id}/progress`)
-        .then((data) => {
-          if (active) setProgress(data);
-        })
-        .catch((e) => {
-          if (active) setError(e.message);
-        });
     if (page === 'discussions')
       api<typeof comments>(`/discussions/${item.id}/comments`)
         .then((data) => {
@@ -1498,7 +1540,6 @@ function Detail({
       setBusy(false);
     }
   }
-  const currentLesson = item.lessons?.[lesson];
   return (
     <Modal title={item.title} close={close} wide={page === 'notebooks'}>
       {page !== 'notebooks' && (
@@ -1731,49 +1772,6 @@ function Detail({
         </>
       )}
 
-      {page === 'courses' && (
-        <>
-          <div className="progress-track">
-            <div style={{ width: `${(progress.length / (item.lessons?.length || 1)) * 100}%` }} />
-          </div>
-          <p className="muted">
-            {progress.length} of {item.lessons?.length} lessons complete
-          </p>
-          <div className="lesson-tabs">
-            {item.lessons?.map((l, i) => (
-              <button
-                key={l.title}
-                className={lesson === i ? 'active' : ''}
-                onClick={() => setLesson(i)}
-              >
-                {progress.includes(i) ? <Check size={15} /> : <span>{i + 1}</span>}
-                {l.title}
-              </button>
-            ))}
-          </div>
-          {currentLesson && (
-            <>
-              <h3>{currentLesson.title}</h3>
-              <p className="detail-description">{currentLesson.body}</p>
-              <pre>{currentLesson.code}</pre>
-              <button
-                className="button"
-                disabled={busy || progress.includes(lesson)}
-                onClick={() =>
-                  act(async () => {
-                    await api(`/courses/${item.id}/lessons/${lesson}/complete`, { method: 'POST' });
-                    setProgress(await api(`/courses/${item.id}/progress`));
-                    changed('Progress saved');
-                  })
-                }
-              >
-                {progress.includes(lesson) ? 'Completed' : 'Mark as complete'}
-                <Check size={16} />
-              </button>
-            </>
-          )}
-        </>
-      )}
       {page === 'discussions' && (
         <>
           <Engagement

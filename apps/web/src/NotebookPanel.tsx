@@ -12,7 +12,9 @@ import {
   Database,
   Table2,
 } from 'lucide-react';
-import { api, type Item } from './api';
+import { api, type ComputeUsage, type Item } from './api';
+import GpuUsageMeter, { InternetOff } from './GpuUsageMeter';
+import { NotebookRuns, NotebookSchedules } from './NotebookRuns';
 
 export type InputFile = {
   id: number;
@@ -44,8 +46,10 @@ export default function NotebookPanel({
   outputCount,
   close,
   revision = 0,
+  usage = null,
 }: {
   revision?: number;
+  usage?: ComputeUsage | null;
   inputs: Input[];
   attach: (item: Input) => Promise<void>;
   remove: (item: Input) => Promise<void>;
@@ -364,12 +368,14 @@ export default function NotebookPanel({
           <dd>Python 3</dd>
           <dt>Accelerator</dt>
           <dd>
-            {runtime
-              ? runtime.gpu_count
-                ? `${runtime.gpu_resource.startsWith('nvidia.') ? 'NVIDIA GPU' : 'GPU'} × ${runtime.gpu_count} (configured)`
+            {usage
+              ? usage.session_accelerator === 'gpu'
+                ? `${usage.gpu_resource.startsWith('nvidia.') ? 'NVIDIA GPU' : 'GPU'} × ${usage.gpus_per_workload}`
                 : 'CPU'
               : 'Unavailable'}
           </dd>
+          <dt>Internet</dt>
+          <dd>Off (disconnected cluster)</dd>
           <dt>Notebook</dt>
           <dd>{cellCount} cells</dd>
           <dt>Execution limit</dt>
@@ -379,12 +385,28 @@ export default function NotebookPanel({
               : 'Unavailable'}
           </dd>
         </dl>
+        <p className="notebook-panel-note">
+          Choose CPU or GPU when you start a session. To switch, save and stop the session first.
+        </p>
+        <GpuUsageMeter usage={usage} compact />
+      </details>
+      <details>
+        <summary>Background runs</summary>
+        {notebookId > 0 ? (
+          <NotebookRuns notebookId={notebookId} usage={usage} revision={revision} />
+        ) : (
+          <p className="notebook-panel-note">
+            Save this notebook to run it in the background. <InternetOff />
+          </p>
+        )}
       </details>
       <details>
         <summary>Schedule a notebook to run</summary>
-        <p className="notebook-panel-note">
-          Scheduled runs are not available yet. Use Run All to execute this notebook now.
-        </p>
+        {notebookId > 0 ? (
+          <NotebookSchedules notebookId={notebookId} usage={usage} />
+        ) : (
+          <p className="notebook-panel-note">Save this notebook to schedule runs.</p>
+        )}
       </details>
       {(picker || upload) && (
         <div

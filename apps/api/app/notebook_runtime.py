@@ -1,17 +1,25 @@
 """JupyterHub lifecycle and private working copies; no code executes in the API."""
 
+import asyncio
 import json
+import logging
 import os
+import time
+from typing import Literal, Optional
 from urllib.parse import quote, urlencode, unquote, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth import current_user
-from .db import get_db
-from .models import Notebook, NotebookPublication, Dataset, User
+from .db import SessionLocal, get_db
+from .models import GpuUsage, Notebook, NotebookPublication, Dataset, User
+
+# A GPU session last seen running longer ago than this is charged until that sighting.
+STALE_SESSION_SECONDS = 180
 
 router = APIRouter(prefix="/api", tags=["Notebook runtime"])
 
@@ -127,17 +135,79 @@ def runtime_settings(user: User = Depends(current_user)):
     }
 
 
+def open_sessions(db, user_id=None):
+    query = select(GpuUsage).where(
+        GpuUsage.kind == "session", GpuUsage.ended_at.is_(None)
+    )
+    if user_id is not None:
+        query = query.where(GpuUsage.user_id == user_id)
+    return db.scalars(query).all()
+
+
+def reconcile_session(db, user, state):
+    """Close a user's GPU session record once the Hub reports the server stopped."""
+    rows = open_sessions(db, user.id)
+    if not rows:
+        return
+    moment = time.time()
+    for row in rows:
+        if state in ("starting", "ready", "stopping"):
+            row.last_seen_at = moment
+        else:
+            seen = row.last_seen_at or row.started_at
+            row.ended_at = moment if moment - seen <= STALE_SESSION_SECONDS else seen
+    db.commit()
+
+
+async def reconcile_all_sessions(db, hub):
+    user_ids = {row.user_id for row in open_sessions(db)}
+    for user in db.scalars(select(User).where(User.id.in_(user_ids))).all():
+        reconcile_session(db, user, (await hub.status(user))["state"])
+
+
+async def reconcile_gpu_sessions():
+    """Keep GPU session records in step with the Hub, also for closed browser tabs."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            hub = get_hub()
+            with SessionLocal() as db:
+                await reconcile_all_sessions(db, hub)
+        except HTTPException:
+            pass  # Standalone API mode has no Hub.
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "GPU session check failed; will retry"
+            )
+
+
+class SessionInput(BaseModel):
+    accelerator: Literal["cpu", "gpu"] = "cpu"
+
+
 @router.get("/notebook-session")
 async def session_status(
-    user: User = Depends(current_user), hub: HubClient = Depends(get_hub)
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+    hub: HubClient = Depends(get_hub),
 ):
-    return await hub.status(user)
+    state = await hub.status(user)
+    reconcile_session(db, user, state["state"])
+    return state
 
 
 @router.post("/notebook-session")
 async def start_session(
-    user: User = Depends(current_user), hub: HubClient = Depends(get_hub)
+    data: Optional[SessionInput] = None,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+    hub: HubClient = Depends(get_hub),
 ):
+    """Start the user's server. Without a body, reuse a running server or start CPU."""
+    return await ensure_server(user, hub, db, data.accelerator if data else None)
+
+
+async def ensure_server(user, hub, db=None, accelerator=None):
     name = hub_username(user)
     result = await hub.request("GET", f"/users/{name}")
     if result.status_code == 404:
@@ -147,22 +217,58 @@ async def start_session(
     else:
         hub.expect(result)
     state = await hub.status(user)
-    if state["state"] == "stopped":
-        response = await hub.request("POST", f"/users/{name}/server", json={})
+    if db is not None:
+        reconcile_session(db, user, state["state"])
+    running = "gpu" if db is not None and open_sessions(db, user.id) else "cpu"
+    if state["state"] != "stopped":
+        if accelerator and accelerator != running and state["state"] != "stopping":
+            raise HTTPException(
+                409,
+                f"Your notebook server is already running on {running.upper()}. Save"
+                f" your work and stop the session before starting a {accelerator.upper()}"
+                " session.",
+            )
+        return state
+    accelerator = accelerator or "cpu"
+    reservation = None
+    if accelerator == "gpu":
+        from .compute import lock_pool, open_usage, require_gpu
+
+        await reconcile_all_sessions(db, hub)
+        lock_pool(db)
+        gpus = require_gpu(db, user, "session")
+        # Reserve before starting, so a concurrent start sees the GPU as allocated.
+        reservation = open_usage(db, user.id, "session", None, gpus)
+        db.commit()
+    try:
+        response = await hub.request(
+            "POST",
+            f"/users/{name}/server",
+            json={"user_options": {"accelerator": accelerator}},
+        )
         # 400 can indicate another request already started the default server.
         if response.status_code == 400:
             state = await hub.status(user)
             if state["state"] not in ("starting", "ready"):
                 hub.expect(response, (201, 202))
+            if reservation is not None and len(open_sessions(db, user.id)) > 1:
+                db.delete(reservation)
+                db.commit()
             return state
         hub.expect(response, (201, 202))
-        return {"state": "starting" if response.status_code == 202 else "ready"}
-    return state
+    except Exception:
+        if reservation is not None:
+            db.delete(reservation)
+            db.commit()
+        raise
+    return {"state": "starting" if response.status_code == 202 else "ready"}
 
 
 @router.delete("/notebook-session")
 async def stop_session(
-    user: User = Depends(current_user), hub: HubClient = Depends(get_hub)
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+    hub: HubClient = Depends(get_hub),
 ):
     state = await hub.status(user)
     if state["state"] == "starting":
@@ -172,7 +278,12 @@ async def stop_session(
     if state["state"] == "ready":
         response = await hub.request("DELETE", f"/users/{hub_username(user)}/server")
         hub.expect(response, (204, 202))
+        from .compute import close_usage
+
+        close_usage(db, "session", user_id=user.id)
+        db.commit()
         return {"state": "stopping" if response.status_code == 202 else "stopped"}
+    reconcile_session(db, user, state["state"])
     return state
 
 
@@ -310,6 +421,9 @@ def notebook_access(request: Request, user: User = Depends(current_user)):
         "/jupyter/hub/api/oauth2/"
     ):
         raise HTTPException(403, "Use the Arena notebook controls")
+    # Hub spawn pages could reuse a previous GPU choice without Arena's quota checks.
+    if path.startswith("/jupyter/hub/spawn"):
+        raise HTTPException(403, "Start notebook sessions from Arena")
     if path.startswith("/jupyter/user/") or path.startswith("/jupyter/hub/user/"):
         raise HTTPException(403, "This notebook workspace belongs to another user")
     if path.startswith("/jupyter/hub/") or path == "/jupyter/":

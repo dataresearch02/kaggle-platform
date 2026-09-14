@@ -12,7 +12,10 @@ async def serve():
 
     # Compose implementations can start the worker while the API creates tables.
     for _ in range(60):
-        if inspect(engine).has_table("benchmark_runs"):
+        # notebook_runs is the newest table; wait until the API has created it.
+        if inspect(engine).has_table("benchmark_runs") and inspect(engine).has_table(
+            "notebook_runs"
+        ):
             break
         await asyncio.sleep(1)
     else:
@@ -25,11 +28,18 @@ async def serve():
         from .benchmark_worker import recover
 
         recover(db)
+        from .compute_worker import recover as recover_compute
+
+        recover_compute(db)
     from .benchmark_worker import worker as benchmark_worker
+    from .compute_worker import scheduler, worker as compute_worker
 
     async with asyncio.TaskGroup() as group:
         group.create_task(commit_worker())
         group.create_task(benchmark_worker())
+        # Exercise attempts and background notebook runs, one at a time.
+        group.create_task(compute_worker())
+        group.create_task(scheduler())
 
 
 async def main():

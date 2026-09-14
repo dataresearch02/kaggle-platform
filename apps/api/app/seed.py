@@ -19,11 +19,14 @@ SEED_TEST_CSV = "id,temperature,working_day\n7,20,1\n8,10,1\n9,23,0\n"
 
 
 def seed(db):
+    from .learn_content import ensure_learning_content
     from .migrations import ensure_default_forums
 
     ensure_default_forums(db.connection())
     db.commit()
     if db.scalar(select(User).where(User.username == "arena")):
+        # Upgrades existing installations: lessons, progress and seeded exercises.
+        ensure_learning_content(db)
         return
     user = User(
         username="arena", password_hash=hash_password(secrets.token_urlsafe(32))
@@ -148,13 +151,16 @@ def seed(db):
             ],
         ),
     ]
-    for title, description, duration, lessons in courses:
+    for position, (title, description, duration, lessons) in enumerate(courses, 1):
         db.add(
             Course(
                 title=title,
                 description=description,
                 duration=duration,
+                # Converted into lessons with exercises by ensure_learning_content.
                 lessons=json.dumps(lessons),
+                status="published",
+                position=position,
             )
         )
     general = db.scalar(select(Forum).where(Forum.slug == "general"))
@@ -179,3 +185,4 @@ def seed(db):
         )
     )
     db.commit()
+    ensure_learning_content(db)

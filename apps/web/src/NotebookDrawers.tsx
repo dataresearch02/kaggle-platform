@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Lock, Users, X } from 'lucide-react';
-import { api } from './api';
+import { api, type Accelerator, type ComputeUsage } from './api';
+import { InternetOff } from './GpuUsageMeter';
+import { AcceleratorSelect } from './NotebookRuns';
 
 type Label = { name: string; tags: string[] };
 type Version = { id: number; label?: Label | null };
@@ -18,11 +20,13 @@ export default function NotebookDrawers({
   competitionId,
   save,
   changed,
+  usage = null,
 }: {
   mode: 'save' | 'share';
   close: () => void;
   id: number;
   competitionId?: number;
+  usage?: ComputeUsage | null;
   save: (label: Label) => Promise<number | false>;
   changed: () => void;
 }) {
@@ -35,6 +39,7 @@ export default function NotebookDrawers({
   const [tags, setTags] = useState('');
   const [type, setType] = useState('save');
   const [filename, setFilename] = useState('submission.csv');
+  const [runAccelerator, setRunAccelerator] = useState<Accelerator>('cpu');
   const [canCommit, setCanCommit] = useState(false);
   const [sharing, setSharing] = useState<Sharing>({
     visibility: 'private',
@@ -143,6 +148,11 @@ export default function NotebookDrawers({
                   throw new Error(
                     'The notebook could not be saved. Check the editor error and try again.',
                   );
+                if (type === 'run')
+                  await api(`/code/${savedId}/runs`, {
+                    method: 'POST',
+                    body: JSON.stringify({ accelerator: runAccelerator }),
+                  });
                 if (type === 'commit')
                   await api(`/code/${savedId}/commits`, {
                     method: 'POST',
@@ -231,6 +241,7 @@ export default function NotebookDrawers({
                         onChange={(event) => setType(event.target.value)}
                       >
                         <option value="save">Save notebook only</option>
+                        <option value="run">Save & Run All (background)</option>
                         <option value="commit" disabled={!canCommit}>
                           Save & Run All (Commit)
                         </option>
@@ -239,8 +250,20 @@ export default function NotebookDrawers({
                     <p>
                       {type === 'save'
                         ? 'Save your cells and current outputs without running the notebook.'
-                        : 'Run a fresh saved snapshot in an isolated runtime job, evaluate it, and publish to the competition after success.'}
+                        : type === 'run'
+                          ? 'Save this version, then run it top to bottom in a fresh isolated runtime. The executed notebook and generated files are added to the version history. Follow progress under Background runs in the notebook panel.'
+                          : 'Run a fresh saved snapshot in an isolated runtime job, evaluate it, and publish to the competition after success.'}
                     </p>
+                    {type === 'run' && (
+                      <>
+                        <AcceleratorSelect
+                          value={runAccelerator}
+                          onChange={setRunAccelerator}
+                          gpuAvailable={!!usage?.gpu_available.background}
+                        />
+                        <InternetOff />
+                      </>
+                    )}
                     {!canCommit && (
                       <p className="muted">
                         {competitionId

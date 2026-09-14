@@ -68,12 +68,14 @@ async def execute(id):
         row = db.get(BenchmarkRun, id)
         (work / "snapshot.json").write_text(row.snapshot)
         snapshot = json.loads(row.snapshot)
+        owner_id = row.owner_id
     (work / "runner.py").write_bytes(
         (Path(__file__).parent / "benchmark_runner.py").read_bytes()
     )
     (work / "inference").mkdir()
-    from .runtime_jobs import run
+    from .runtime_jobs import integer, run
     from .benchmark_providers import broker
+    from .compute import gpu_job
 
     def active():
         with SessionLocal() as db:
@@ -85,7 +87,15 @@ async def execute(id):
     )
     inference_task = asyncio.create_task(broker(directory_fd, snapshot["models"]))
     try:
-        await run(f"arena-benchmark-{id}", work, {}, 300, active)
+        # A Job requesting EVALUATION_GPUS holds GPU capacity while it runs.
+        async with gpu_job(
+            SessionLocal,
+            owner_id,
+            "benchmark",
+            id,
+            integer("EVALUATION_GPUS", 0, minimum=0, maximum=8),
+        ):
+            await run(f"arena-benchmark-{id}", work, {}, 300, active)
         payload = json.loads(read_result(work / "results.json", 10 * 1024 * 1024))
         finish(id, payload)
     finally:

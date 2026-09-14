@@ -44,11 +44,29 @@ def prepare_permissions(work):
             os.chown(path, 10001, 10001)
 
 
-def job_manifest(name, directory, env, timeout):
-    if not re.fullmatch(r"(?:job|benchmark)-\d+-[0-9a-f]+", directory):
+def gpu_count(gpus=None):
+    """GPUs for one workload: explicit for runs and attempts, else EVALUATION_GPUS."""
+    if gpus is None:
+        return integer("EVALUATION_GPUS", 0, minimum=0, maximum=8)
+    if not 0 <= gpus <= 8:
+        raise ValueError("A workload may request between 0 and 8 GPUs")
+    return gpus
+
+
+def tolerations(gpus):
+    """EVALUATION_TOLERATIONS; CPU workloads drop tolerations for the GPU taint."""
+    items = json.loads(os.getenv("EVALUATION_TOLERATIONS", "[]"))
+    if gpus:
+        return items
+    resource = os.getenv("GPU_RESOURCE_NAME", "nvidia.com/gpu")
+    return [item for item in items if item.get("key") != resource]
+
+
+def job_manifest(name, directory, env, timeout, gpus=None):
+    if not re.fullmatch(r"(?:job|benchmark|run|attempt)-\d+-[0-9a-f]+", directory):
         raise ValueError("Invalid evaluation directory")
     limits = resources()
-    gpu = integer("EVALUATION_GPUS", 0, minimum=0, maximum=8)
+    gpu = gpu_count(gpus)
     if gpu:
         limits[os.getenv("GPU_RESOURCE_NAME", "nvidia.com/gpu")] = str(gpu)
     labels = {
@@ -78,9 +96,7 @@ def job_manifest(name, directory, env, timeout):
                     "nodeSelector": json.loads(
                         os.getenv("EVALUATION_NODE_SELECTOR", "{}")
                     ),
-                    "tolerations": json.loads(
-                        os.getenv("EVALUATION_TOLERATIONS", "[]")
-                    ),
+                    "tolerations": tolerations(gpu),
                     "containers": [
                         {
                             "name": "notebook",
@@ -153,7 +169,7 @@ async def cluster_request(client, root, method, path, **kwargs):
     )
 
 
-async def run_kubernetes(name, work, env, timeout, active):
+async def run_kubernetes(name, work, env, timeout, active, gpus=None):
     client, root, base = cluster_client()
     created = False
     async with client:
@@ -163,7 +179,7 @@ async def run_kubernetes(name, work, env, timeout, active):
                 root,
                 "POST",
                 base,
-                json=job_manifest(name, work.name, env, timeout),
+                json=job_manifest(name, work.name, env, timeout, gpus),
             )
             result.raise_for_status()
             created = True
@@ -203,11 +219,11 @@ async def run_kubernetes(name, work, env, timeout, active):
                     )
 
 
-async def run_docker(name, work, env, timeout, active):
+async def run_docker(name, work, env, timeout, active, gpus=None):
     host = Path(os.environ["EVALUATION_HOST_PATH"])
     if not host.is_absolute():
         raise ValueError("EVALUATION_HOST_PATH must be absolute")
-    if integer("EVALUATION_GPUS", 0, minimum=0, maximum=8):
+    if gpu_count(gpus):
         raise ValueError("GPU evaluation requires EVALUATION_RUNTIME=kubernetes")
     transport = httpx.AsyncHTTPTransport(
         uds=os.getenv("DOCKER_SOCKET_PATH", "/var/run/docker.sock")
@@ -274,7 +290,8 @@ async def run_docker(name, work, env, timeout, active):
                     await docker.delete(f"/containers/{name}", params={"force": "true"})
 
 
-async def run(name, work, env, timeout, active):
+async def run(name, work, env, timeout, active, gpus=None):
+    """Run /work/runner.py offline; gpus=None keeps the EVALUATION_GPUS default."""
     prepare_permissions(work)
     defaults = {
         "HOME": "/tmp",
@@ -286,7 +303,7 @@ async def run(name, work, env, timeout, active):
     }
     await asyncio.wait_for(
         (run_kubernetes if kubernetes() else run_docker)(
-            name, work, {**defaults, **env}, timeout, active
+            name, work, {**defaults, **env}, timeout, active, gpus
         ),
         timeout=timeout,
     )

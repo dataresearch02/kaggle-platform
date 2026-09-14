@@ -44,7 +44,8 @@ import {
   Square,
   Trash2,
 } from 'lucide-react';
-import { api } from './api';
+import { api, type Accelerator } from './api';
+import { useComputeUsage } from './GpuUsageMeter';
 import NotebookPanel, { type Input as NotebookInput } from './NotebookPanel';
 
 /** Sanitize rich HTML output and keep it from loading anything outside this installation. */
@@ -238,6 +239,9 @@ export default function NotebookWorkspace({
   const [document, setDocument] = useState<Document>(() => blank(initialCode));
   const doc = useRef(document);
   const [state, setState] = useState<'idle' | 'starting' | 'ready'>('idle');
+  const [accelerator, setAccelerator] = useState<Accelerator>('cpu');
+  const [usageRevision, setUsageRevision] = useState(0);
+  const usage = useComputeUsage(usageRevision, signedIn);
   const [running, setRunning] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [controlling, setControlling] = useState(false);
@@ -307,7 +311,8 @@ export default function NotebookWorkspace({
       cells: previous.cells.map((cell) => (cell.id === id ? { ...cell, ...change } : cell)),
     }));
   }
-  async function launch() {
+  /** Without a choice, reuse a running server (any accelerator) or start on CPU. */
+  async function launch(choice?: Accelerator) {
     if (!signedIn) {
       signIn();
       return;
@@ -316,7 +321,11 @@ export default function NotebookWorkspace({
     setState('starting');
     setError('');
     try {
-      let session = await api<{ state: string }>('/notebook-session', { method: 'POST' });
+      let session = await api<{ state: string }>('/notebook-session', {
+        method: 'POST',
+        ...(choice ? { body: JSON.stringify({ accelerator: choice }) } : {}),
+      });
+      setUsageRevision((value) => value + 1);
       const deadline = Date.now() + 240000;
       while (session.state !== 'ready') {
         if (!alive.current || version !== generation.current) return;
@@ -338,6 +347,7 @@ export default function NotebookWorkspace({
       setDirty(false);
       setActive(loaded.cells[0].id);
       setState('ready');
+      setUsageRevision((value) => value + 1);
       setPreview(
         Object.fromEntries(
           loaded.cells
@@ -398,6 +408,8 @@ export default function NotebookWorkspace({
     )
       return;
     if (!(await save())) return;
+    // Restart on the same accelerator; stopping releases a GPU for others.
+    const current = usage?.session_accelerator || 'cpu';
     setControlling(true);
     setState('starting');
     try {
@@ -411,7 +423,8 @@ export default function NotebookWorkspace({
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
       if (alive.current) {
-        if (restart) await launch();
+        setUsageRevision((value) => value + 1);
+        if (restart) await launch(current);
         else setState('idle');
       }
     } catch (error) {
@@ -807,6 +820,7 @@ export default function NotebookWorkspace({
           close={() => setDrawer(null)}
           id={notebookId}
           competitionId={competitionId}
+          usage={usage}
           changed={() => setVersionRevision((value) => value + 1)}
           save={async (label) => {
             update((previous) => ({
@@ -1031,7 +1045,30 @@ export default function NotebookWorkspace({
                     ? 'Starting session…'
                     : 'Session off'}
             </span>
-            {state === 'idle' && <button onClick={() => void launch()}>Start session</button>}
+            {state === 'idle' && (
+              <>
+                <select
+                  aria-label="Session accelerator"
+                  className="notebook-accelerator"
+                  value={accelerator}
+                  onChange={(event) => setAccelerator(event.target.value as Accelerator)}
+                >
+                  <option value="cpu">CPU</option>
+                  <option value="gpu" disabled={!usage?.gpu_available.session}>
+                    GPU{usage?.gpu_available.session ? '' : ' (unavailable)'}
+                  </option>
+                </select>
+                <button onClick={() => void launch(accelerator)}>Start session</button>
+              </>
+            )}
+            {state === 'ready' && (
+              <span
+                className={`accelerator-chip ${usage?.session_accelerator || 'cpu'}`}
+                title="Accelerator of your running notebook server"
+              >
+                {(usage?.session_accelerator || 'cpu').toUpperCase()}
+              </span>
+            )}
             <button
               aria-label="Interrupt"
               title="Interrupt"
@@ -1059,6 +1096,15 @@ export default function NotebookWorkspace({
           {error && (
             <p className="error native-notebook-error" role="alert">
               {error}
+            </p>
+          )}
+          {state === 'ready' && usage?.session_accelerator === 'gpu' && (
+            <p className="gpu-warning notebook-gpu-warning" role="status">
+              This session holds a whole GPU, even while idle. Save and stop it when you finish so
+              others can use the card.{' '}
+              <button className="text-button" disabled={busy} onClick={() => void restartServer(false)}>
+                Save and stop session
+              </button>
             </p>
           )}
           {state === 'starting' && (
@@ -1348,6 +1394,7 @@ export default function NotebookWorkspace({
               });
             }}
             ready={!busy}
+            usage={usage}
             notebookId={notebookId}
             draft={!!draftId}
             cellCount={document.cells.length}

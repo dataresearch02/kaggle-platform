@@ -22,6 +22,7 @@ from .models import (
     NotebookWorkingCopy,
     NotebookDraft,
     NotebookDraftCompetition,
+    NotebookDraftExercise,
     NotebookDraftInput,
     User,
     Competition,
@@ -101,7 +102,12 @@ def create(
     competition_id: Optional[int] = Query(default=None, ge=1),
     source_kind: Optional[str] = None,
     source_id: Optional[int] = Query(default=None, ge=1),
+    exercise_id: Optional[int] = Query(default=None, ge=1),
 ):
+    if exercise_id is not None and (
+        competition_id is not None or source_kind is not None or source_id is not None
+    ):
+        raise HTTPException(422, "Open an exercise notebook without other inputs")
     joined_competition(db, competition_id, user)
     source = None
     if source_kind is not None or source_id is not None:
@@ -110,6 +116,11 @@ def create(
         from .input_sources import source_files
 
         source, _ = source_files(db, user, source_kind, source_id)
+    exercise = None
+    if exercise_id is not None:
+        from .learn import exercise_context
+
+        exercise, _, _ = exercise_context(db, exercise_id, user)
     draft = NotebookDraft(
         id=secrets.token_hex(16),
         owner_id=user.id,
@@ -123,6 +134,8 @@ def create(
         )
     if source:
         db.add(NotebookDraftInput(draft_id=draft.id, source=json.dumps(source)))
+    if exercise:
+        db.add(NotebookDraftExercise(draft_id=draft.id, exercise_id=exercise.id))
     db.commit()
     return {"id": draft.id}
 
@@ -213,7 +226,13 @@ async def open_draft(
                     + ")\nfor file in input_dir.rglob('*'):\n    if file.is_file():\n        print(file)\n",
                 }
             )
-        if context or selected_input:
+        starter = db.get(NotebookDraftExercise, draft.id)
+        if starter:
+            from .learn import exercise_notebook
+
+            # Prompt and starter code; practice data is copied by prepare_inputs.
+            exercise_notebook(db, user, starter.exercise_id, document)
+        if context or selected_input or starter:
             from .notebook_files import prepare_inputs, folder_for
 
             await prepare_inputs(db, user, hub, folder_for(db, path), document)

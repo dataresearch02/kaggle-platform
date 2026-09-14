@@ -6,6 +6,78 @@ sys.path.insert(0, "/srv/jupyterhub")
 from arena_auth import ArenaAuthenticator
 from storage import prepare_workspace
 
+GPU_RESOURCE = os.getenv("GPU_RESOURCE_NAME", "nvidia.com/gpu")
+
+
+def json_env(name, default, kind):
+    value = json.loads(os.getenv(name) or default)
+    if not isinstance(value, kind):
+        raise ValueError(f"{name} must be a JSON {kind.__name__}")
+    return value
+
+
+def notebook_gpu_count():
+    """GPUs for one GPU session (NOTEBOOK_GPU_COUNT, default 1)."""
+    count = int(os.getenv("NOTEBOOK_GPU_COUNT", "1"))
+    if not 1 <= count <= 8:
+        raise ValueError("NOTEBOOK_GPU_COUNT must be between 1 and 8")
+    return count
+
+
+def cpu_tolerations():
+    """NOTEBOOK_TOLERATIONS without GPU tolerations: CPU sessions avoid GPU nodes."""
+    return [
+        item
+        for item in json_env("NOTEBOOK_TOLERATIONS", "[]", list)
+        if item.get("key") != GPU_RESOURCE
+    ]
+
+
+def gpu_tolerations():
+    default = [{"key": GPU_RESOURCE, "operator": "Exists", "effect": "NoSchedule"}]
+    return json_env("NOTEBOOK_GPU_TOLERATIONS", json.dumps(default), list)
+
+
+def accelerator_option(user_options):
+    """Validate user_options: only {"accelerator": "cpu" | "gpu"} is accepted.
+
+    The Arena API is the only client allowed to start servers, but user_options
+    arrive over the REST API and are validated here regardless.
+    """
+    options = user_options or {}
+    if not isinstance(options, dict) or set(options) - {"accelerator"}:
+        raise ValueError("Unsupported notebook server options")
+    accelerator = options.get("accelerator", "cpu")
+    if accelerator not in ("cpu", "gpu"):
+        raise ValueError("accelerator must be cpu or gpu")
+    return accelerator
+
+
+def apply_kubernetes_options(spawner, user_options):
+    """Request GPUs and tolerate the GPU taint only for GPU sessions.
+
+    Every value is reset on each spawn because a user's spawner object is reused.
+    """
+    accelerator = accelerator_option(user_options)
+    node_selector = json_env("NOTEBOOK_NODE_SELECTOR", "{}", dict)
+    tolerations = cpu_tolerations()
+    gpus = {}
+    if accelerator == "gpu":
+        node_selector.update(json_env("NOTEBOOK_GPU_NODE_SELECTOR", "{}", dict))
+        tolerations += gpu_tolerations()
+        gpus = {GPU_RESOURCE: str(notebook_gpu_count())}
+    spawner.node_selector = node_selector
+    spawner.tolerations = tolerations
+    spawner.extra_resource_limits = gpus
+    spawner.extra_resource_guarantees = dict(gpus)
+    spawner.extra_labels = {"arena.notebook": "true", "arena.accelerator": accelerator}
+
+
+def apply_docker_options(spawner, user_options):
+    if accelerator_option(user_options) == "gpu":
+        raise ValueError("GPU sessions require NOTEBOOK_SPAWNER=kubernetes")
+
+
 c = get_config()  # noqa: F821 - provided by JupyterHub
 c.JupyterHub.bind_url = "http://:8000/jupyter/"
 c.JupyterHub.hub_ip = "0.0.0.0"
@@ -77,15 +149,13 @@ if os.getenv("NOTEBOOK_SPAWNER", "docker") == "kubernetes":
         "allowPrivilegeEscalation": False,
         "capabilities": {"drop": ["ALL"]},
     }
-    c.KubeSpawner.node_selector = json.loads(os.getenv("NOTEBOOK_NODE_SELECTOR", "{}"))
-    c.KubeSpawner.tolerations = json.loads(os.getenv("NOTEBOOK_TOLERATIONS", "[]"))
-    gpu_count = int(os.getenv("NOTEBOOK_GPUS", "0"))
-    if not 0 <= gpu_count <= 8:
-        raise ValueError("NOTEBOOK_GPUS must be between 0 and 8")
-    if gpu_count:
-        gpu = {os.getenv("GPU_RESOURCE_NAME", "nvidia.com/gpu"): str(gpu_count)}
-        c.KubeSpawner.extra_resource_limits = gpu
-        c.KubeSpawner.extra_resource_guarantees = gpu
+    # Sessions default to CPU. GPUs are requested per session from the accelerator
+    # user option; NOTEBOOK_GPUS no longer gives every session a GPU.
+    c.KubeSpawner.node_selector = json_env("NOTEBOOK_NODE_SELECTOR", "{}", dict)
+    c.KubeSpawner.tolerations = cpu_tolerations()
+    gpu_tolerations()
+    notebook_gpu_count()  # Fail at startup on invalid GPU settings.
+    c.KubeSpawner.apply_user_options = apply_kubernetes_options
 else:
     c.DockerSpawner.image = os.environ.get(
         "NOTEBOOK_IMAGE", "arena-singleuser:cpu-2026.09.1"
@@ -99,6 +169,7 @@ else:
     c.DockerSpawner.name_template = "arena-notebook-{username}"
     c.DockerSpawner.notebook_dir = "/home/jovyan/work"
     c.Spawner.pre_spawn_hook = prepare_workspace
+    c.DockerSpawner.apply_user_options = apply_docker_options
     c.DockerSpawner.mem_limit = "2G"
     c.DockerSpawner.cpu_limit = 2
     c.DockerSpawner.extra_host_config = {

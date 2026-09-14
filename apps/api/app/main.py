@@ -45,14 +45,12 @@ from .models import (
     Competition,
     CompetitionResource,
     CompetitionPost,
-    Course,
     Dataset,
     Entry,
     ModelCard,
     Notebook,
     NotebookDraft,
     WorkFileDeletion,
-    Progress,
     Session,
     Submission,
     SubmissionTeam,
@@ -142,9 +140,15 @@ async def lifespan(app):
     )
     cleanup = asyncio.create_task(cleanup_drafts())
     work_cleanup = asyncio.create_task(cleanup_work_files())
+    from .notebook_runtime import reconcile_gpu_sessions
+
+    gpu_sessions = asyncio.create_task(reconcile_gpu_sessions())
     try:
         yield
     finally:
+        gpu_sessions.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await gpu_sessions
         if commits:
             commits.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -216,7 +220,14 @@ from .follows import router as follows_router
 from .search import router as search_router
 from .progression import router as progression_router
 
+from .learn import router as learn_router
+from .notebook_runs import router as runs_router
+from .compute import router as compute_router
+
 for community_router in (
+    learn_router,
+    runs_router,
+    compute_router,
     forums_router,
     votes_router,
     notifications_router,
@@ -1092,58 +1103,6 @@ def download_notebook(
     )
 
 
-@app.get("/api/courses")
-def courses(
-    response: Response,
-    q: str = "",
-    pagination: Page = Depends(page),
-    db: DBSession = Depends(get_db),
-):
-    return [
-        {**item, "lessons": json.loads(item["lessons"])}
-        for item in listing(db, Course, q, pagination, response)
-    ]
-
-
-@app.get("/api/courses/{id}/progress")
-def progress(
-    id: int, user: User = Depends(current_user), db: DBSession = Depends(get_db)
-):
-    require(db, Course, id)
-    return list(
-        db.scalars(
-            select(Progress.lesson_index).where(
-                Progress.user_id == user.id, Progress.course_id == id
-            )
-        )
-    )
-
-
-@app.post("/api/courses/{id}/lessons/{index}/complete")
-def complete(
-    id: int,
-    index: int,
-    user: User = Depends(current_user),
-    db: DBSession = Depends(get_db),
-):
-    course = require(db, Course, id)
-    if not 0 <= index < len(json.loads(course.lessons)):
-        raise HTTPException(404, "Lesson not found")
-    if not db.scalar(
-        select(Progress).where(
-            Progress.user_id == user.id,
-            Progress.course_id == id,
-            Progress.lesson_index == index,
-        )
-    ):
-        db.add(Progress(user_id=user.id, course_id=id, lesson_index=index))
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-    return {"completed": True}
-
-
 @app.get("/api/models")
 def models(
     response: Response,
@@ -1432,6 +1391,21 @@ async def remove_work(kind, id, user, db, moderated=False):
                 raise HTTPException(
                     409, "Wait for the notebook commit to finish before deleting"
                 )
+            from .models import NotebookRun, NotebookSchedule
+
+            if db.scalar(
+                select(NotebookRun.id).where(
+                    NotebookRun.notebook_id == id,
+                    NotebookRun.status.in_(["queued", "running"]),
+                )
+            ):
+                raise HTTPException(
+                    409, "Cancel the notebook's background run before deleting"
+                )
+            db.execute(
+                delete(NotebookSchedule).where(NotebookSchedule.notebook_id == id)
+            )
+            db.execute(delete(NotebookRun).where(NotebookRun.notebook_id == id))
             from .models import (
                 NotebookVersion,
                 NotebookSettings,
