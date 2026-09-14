@@ -1,5 +1,11 @@
 # The two notebook workflows and OpenShift GPU deployment
 
+For the disconnected OpenShift 4.20.36 installation, use the transferable
+[sources kit](../sources/README.md). It includes offline image archives, Python
+wheels, the npm cache, offline Dockerfiles, and an optional NFS provisioner.
+The existing cluster NVIDIA GPU Operator and drivers are prerequisites, not
+reinstalled by the kit.
+
 ## Core workflows
 
 1. **Personal notebook:** Create → Notebook → Add Input → select datasets, competition data or notebook outputs → run cells in the native editor → Save Version. Input versions are pinned under the notebook workspace's `input/<source-folder>/`. Saved documents, outputs and generated files survive closing the editor and restarting the personal server. Unsaved drafts expire and are discarded.

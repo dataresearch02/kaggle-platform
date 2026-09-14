@@ -14,3 +14,11 @@ playwright-report/
 *.tsbuildinfo
 
 data/
+
+# Downloaded offline payloads are transferred separately from Git.
+sources/images/
+sources/python/
+sources/node/
+sources/project/
+sources/manifests/
+sources/logs/

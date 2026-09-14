@@ -1,0 +1,9 @@
+images
+logs
+manifests
+scripts
+README.md
+project/.git
+**/node_modules
+**/__pycache__
+**/.env
