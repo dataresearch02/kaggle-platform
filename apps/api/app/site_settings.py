@@ -72,5 +72,12 @@ def can_create_competitions(db, user):
 
 @router.get("/site")
 def site(db=Depends(get_db)):
+    from .oidc import enabled, label
+
     values = site_settings(db)
-    return {key: values[key] for key in PUBLIC}
+    return {
+        **{key: values[key] for key in PUBLIC},
+        # Deployment configuration rather than a stored setting.
+        "oidc_enabled": enabled(),
+        "oidc_label": label(),
+    }

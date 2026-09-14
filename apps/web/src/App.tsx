@@ -21,6 +21,7 @@ import {
   Download,
   FlaskConical,
   GraduationCap,
+  KeyRound,
   Layers3,
   Menu,
   Plus,
@@ -29,7 +30,15 @@ import {
   Trophy,
   X,
 } from 'lucide-react';
-import { api, apiPage, type Item, type Site, type User } from './api';
+import {
+  api,
+  apiPage,
+  oidcLoginPath,
+  ssoErrorMessage,
+  type Item,
+  type Site,
+  type User,
+} from './api';
 import AdminPage, { adminRouteFromHash } from './AdminPage';
 import Markdown from './Markdown';
 import NotebookWorkspace from './NotebookWorkspace';
@@ -149,6 +158,14 @@ function workRouteFromHash(): WorkKind | 'all' | null {
   return match ? (match[1] as WorkKind) || 'all' : null;
 }
 
+/** `#login?sso_error=<code>` after a failed Keycloak sign-in; `#login?local=1` is break-glass. */
+function loginRouteFromHash() {
+  const match = location.hash.match(/^#login(?:\?(.*))?$/);
+  if (!match) return null;
+  const parameters = new URLSearchParams(match[1] || '');
+  return { error: parameters.get('sso_error') || '', local: parameters.get('local') === '1' };
+}
+
 export default function App() {
   const [resourceRoute, setResourceRoute] = useState(resourceRouteFromHash);
   const [accountRoute, setAccountRoute] = useState(accountRouteFromHash);
@@ -157,6 +174,8 @@ export default function App() {
     registration_open: true,
     local_login_enabled: true,
     announcement: '',
+    oidc_enabled: false,
+    oidc_label: '',
   });
   const [dismissed, setDismissed] = useState(() => {
     try {
@@ -201,6 +220,8 @@ export default function App() {
   const [notice, setNotice] = useState('');
   const [revision, setRevision] = useState(0);
   const [auth, setAuth] = useState<'login' | 'register' | null>(null);
+  const [ssoError, setSsoError] = useState('');
+  const [breakGlass, setBreakGlass] = useState(false);
   const [creating, setCreating] = useState(false);
   const [selected, setSelected] = useState<Item | null>(null);
   const [pendingCreate, setPendingCreate] = useState(false);
@@ -259,7 +280,18 @@ export default function App() {
     api<Site>('/site')
       .then(setSite)
       .catch(() => {});
+    const openLogin = () => {
+      const login = loginRouteFromHash();
+      if (!login) return false;
+      setSsoError(login.error);
+      setBreakGlass(login.local);
+      setAuth('login');
+      location.replace('#home');
+      return true;
+    };
+    openLogin();
     const handler = () => {
+      if (openLogin()) return;
       setResourceRoute(resourceRouteFromHash());
       const admin = adminRouteFromHash();
       setAdminRoute(admin);
@@ -416,6 +448,10 @@ export default function App() {
       setLoadingMore(false);
     }
   }
+  // With Keycloak on and local sign-in off, only the Keycloak button is offered;
+  // administrators keep the password form through #login?local=1.
+  const localAuth = site.local_login_enabled || !site.oidc_enabled || breakGlass;
+  const canRegister = site.registration_open && (site.local_login_enabled || !site.oidc_enabled);
   const mayCreateCompetitions = !user || user.can_create_competitions !== false;
   function createWork(target: Page) {
     if (target === 'competitions' && !mayCreateCompetitions) {
@@ -426,14 +462,14 @@ export default function App() {
     if (user) setCreating(true);
     else {
       setPendingCreate(true);
-      setAuth(site.registration_open ? 'register' : 'login');
+      setAuth(canRegister ? 'register' : 'login');
     }
   }
   useEffect(() => {
     const handler = (event: Event) => createWork((event as CustomEvent<Page>).detail);
     window.addEventListener('arena-create', handler);
     return () => window.removeEventListener('arena-create', handler);
-  }, [user, site.registration_open]);
+  }, [user, canRegister]);
 
   function openWork(kind: WorkKind) {
     go('work', `work/${kind}`);
@@ -459,7 +495,7 @@ export default function App() {
   }
   function requireAuth(action: () => void) {
     if (user) action();
-    else setAuth(site.registration_open ? 'register' : 'login');
+    else setAuth(canRegister ? 'register' : 'login');
   }
   function changed(message: string) {
     setRevision((v) => v + 1);
@@ -558,7 +594,7 @@ export default function App() {
                 <button className="text-button" onClick={() => setAuth('login')}>
                   Sign in
                 </button>
-                {site.registration_open && (
+                {canRegister && (
                   <button className="button small" onClick={() => setAuth('register')}>
                     Join the community <ArrowRight size={15} />
                   </button>
@@ -588,7 +624,11 @@ export default function App() {
         )}
         <main>
           {adminRoute ? (
-            <AdminPage tab={adminRoute} user={user} siteChanged={setSite} />
+            <AdminPage
+              tab={adminRoute}
+              user={user}
+              siteChanged={(values) => setSite((old) => ({ ...old, ...values }))}
+            />
           ) : accountRoute ? (
             <AccountPage
               key={`${accountRoute}-${user?.id}`}
@@ -1014,15 +1054,23 @@ export default function App() {
       )}
       {auth && (
         <AuthModal
-          mode={site.registration_open ? auth : 'login'}
-          canRegister={site.registration_open}
+          mode={canRegister ? auth : 'login'}
+          canRegister={canRegister}
           localLoginEnabled={site.local_login_enabled}
+          showLocal={localAuth}
+          oidcEnabled={site.oidc_enabled}
+          oidcLabel={site.oidc_label || 'Sign in with Keycloak'}
+          ssoError={ssoError}
           toggle={() => setAuth(auth === 'login' ? 'register' : 'login')}
           close={() => {
             setAuth(null);
             setPendingCreate(false);
+            setSsoError('');
+            setBreakGlass(false);
           }}
           success={(u) => {
+            setSsoError('');
+            setBreakGlass(false);
             setUser(u);
             if (pendingCreate) {
               setCreating(true);
@@ -1154,6 +1202,10 @@ function AuthModal({
   mode,
   canRegister,
   localLoginEnabled,
+  showLocal,
+  oidcEnabled,
+  oidcLabel,
+  ssoError,
   toggle,
   close,
   success,
@@ -1161,6 +1213,10 @@ function AuthModal({
   mode: 'login' | 'register';
   canRegister: boolean;
   localLoginEnabled: boolean;
+  showLocal: boolean;
+  oidcEnabled: boolean;
+  oidcLabel: string;
+  ssoError: string;
   toggle: () => void;
   close: () => void;
   success: (u: User) => void;
@@ -1188,53 +1244,89 @@ function AuthModal({
   return (
     <Modal title={mode === 'login' ? 'Welcome back' : 'Start your next discovery'} close={close}>
       <p className="muted">Create, learn, and share with your community.</p>
-      {mode === 'login' && !localLoginEnabled && (
+      {ssoError && (
+        <p className="error" role="alert">
+          {ssoErrorMessage(ssoError)}
+        </p>
+      )}
+      {oidcEnabled && (
+        <a className="button sso-button" href={oidcLoginPath(location.hash.slice(1))}>
+          <KeyRound size={16} />
+          {oidcLabel}
+        </a>
+      )}
+      {oidcEnabled && !canRegister && (
+        <p className="auth-notice">New to Arena? Your account is created when you first sign in.</p>
+      )}
+      {oidcEnabled && showLocal && (
+        <p className="auth-divider">
+          <span>or use your Arena password</span>
+        </p>
+      )}
+      {showLocal && mode === 'login' && !localLoginEnabled && (
         <p className="auth-notice" role="note">
           Username and password sign-in is currently limited to administrators.
         </p>
       )}
-      <form onSubmit={submit}>
-        <label>
-          Username
-          <input
-            name="username"
-            required
-            minLength={3}
-            maxLength={40}
-            pattern="[a-zA-Z0-9_]+"
-            autoComplete="username"
-          />
-        </label>
-        <label>
-          Password
-          <input
-            type="password"
-            name="password"
-            required
-            minLength={10}
-            maxLength={128}
-            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-          />
-          <small>At least 10 characters.</small>
-        </label>
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
-        <button className="button" disabled={busy}>
-          {busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}
-          <ArrowRight size={16} />
-        </button>
-      </form>
-      {canRegister ? (
-        <button className="text-button auth-toggle" onClick={toggle}>
-          {mode === 'login' ? 'New here? Create an account' : 'Already have an account? Sign in'}
-        </button>
-      ) : (
-        <p className="auth-notice">Registration is currently closed.</p>
-      )}
+      {showLocal && <AuthForm mode={mode} submit={submit} busy={busy} error={error} />}
+      {showLocal &&
+        (canRegister ? (
+          <button className="text-button auth-toggle" onClick={toggle}>
+            {mode === 'login' ? 'New here? Create an account' : 'Already have an account? Sign in'}
+          </button>
+        ) : (
+          !oidcEnabled && <p className="auth-notice">Registration is currently closed.</p>
+        ))}
     </Modal>
+  );
+}
+
+function AuthForm({
+  mode,
+  submit,
+  busy,
+  error,
+}: {
+  mode: 'login' | 'register';
+  submit: (e: FormEvent<HTMLFormElement>) => void;
+  busy: boolean;
+  error: string;
+}) {
+  return (
+    <form onSubmit={submit}>
+      <label>
+        Username
+        <input
+          name="username"
+          required
+          minLength={3}
+          maxLength={40}
+          pattern="[a-zA-Z0-9_]+"
+          autoComplete="username"
+        />
+      </label>
+      <label>
+        Password
+        <input
+          type="password"
+          name="password"
+          required
+          minLength={10}
+          maxLength={128}
+          autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+        />
+        <small>At least 10 characters.</small>
+      </label>
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+      <button className="button" disabled={busy}>
+        {busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}
+        <ArrowRight size={16} />
+      </button>
+    </form>
   );
 }
 

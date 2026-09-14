@@ -18,6 +18,12 @@ can restrict the profile and photo to the owner. This does not change notebook,
 dataset or group permissions. Changing the password requires the current password,
 revokes all API tokens and other login sessions, and renews the current session.
 
+When Keycloak sign-in is enabled, Settings also lists the linked Keycloak account
+with **Link Keycloak account** and **Unlink**. Accounts created by Keycloak sign-in
+have no local password: the password form is replaced by a notice that the
+password is managed in Keycloak, and their Keycloak link cannot be removed. See
+[authentication.md](authentication.md).
+
 ## Groups
 
 `#account/groups` supports creating and editing a group, joining by invite code,

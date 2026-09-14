@@ -20,6 +20,7 @@ const tabLabels: Record<AdminTab, string> = {
   settings: 'Settings',
 };
 
+type PublicSettings = Pick<Site, 'registration_open' | 'local_login_enabled' | 'announcement'>;
 export function adminRouteFromHash(): AdminTab | null {
   const match = window.location.hash.match(/^#admin(?:\/([a-z]+))?$/);
   if (!match) return null;
@@ -173,7 +174,7 @@ export default function AdminPage({
 }: {
   tab: AdminTab;
   user: User | null;
-  siteChanged: (site: Site) => void;
+  siteChanged: (site: PublicSettings) => void;
 }) {
   if (user?.role !== 'admin')
     return (
@@ -771,7 +772,7 @@ function AuditTab() {
   );
 }
 
-function SettingsTab({ siteChanged }: { siteChanged: (site: Site) => void }) {
+function SettingsTab({ siteChanged }: { siteChanged: (site: PublicSettings) => void }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');

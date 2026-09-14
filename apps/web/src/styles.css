@@ -6909,6 +6909,30 @@ dialog::backdrop {
   font-size: var(--text-xs);
   color: var(--muted);
 }
+.button.sso-button {
+  display: flex;
+  width: 100%;
+  margin-top: 8px;
+  white-space: normal;
+  text-align: center;
+}
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 0;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+.linked-identities .account-row:first-of-type {
+  padding-top: 0;
+}
 
 /* Moderation */
 .moderation-actions {

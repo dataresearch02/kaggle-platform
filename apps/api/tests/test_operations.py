@@ -192,6 +192,8 @@ def test_site_settings_control_registration_login_and_creation(member):
         "registration_open": True,
         "local_login_enabled": True,
         "announcement": "",
+        "oidc_enabled": False,
+        "oidc_label": "Sign in with Keycloak",
     }
     admin = account("chief", role="admin")
     assert (
@@ -214,6 +216,8 @@ def test_site_settings_control_registration_login_and_creation(member):
         "registration_open": False,
         "local_login_enabled": False,
         "announcement": "**Maintenance** on Friday",
+        "oidc_enabled": False,
+        "oidc_label": "Sign in with Keycloak",
     }
     closed = browser().post(
         "/api/auth/register", json={"username": "latecomer", "password": PASSWORD}

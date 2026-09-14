@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type User } from './api';
+import { api, oidcLoginPath, ssoErrorMessage, type User } from './api';
 import { Avatar, type Profile } from './AccountMenu';
 import ModerationActions, { HiddenNotice } from './Moderation';
 
@@ -20,8 +20,29 @@ type Group = {
   invite_code: string | null;
   members: User[];
 };
+type Identities = {
+  label: string;
+  has_password: boolean;
+  identities: {
+    id: number;
+    provider: string;
+    email: string;
+    username: string;
+    created_at: string;
+    last_login_at: string | null;
+  }[];
+};
+/** The result of returning from Keycloak account linking, if any. */
+function linkResultFromHash() {
+  const match = window.location.hash.match(/^#account\/settings\?(.*)$/);
+  const parameters = new URLSearchParams(match?.[1] || '');
+  const code = parameters.get('sso_error');
+  if (code) return { error: true, text: ssoErrorMessage(code) };
+  return parameters.get('linked') === '1' ? { error: false, text: 'Keycloak account linked' } : null;
+}
 export function accountRouteFromHash() {
-  const path = window.location.hash.slice(1);
+  // Keycloak linking returns with a query such as ?linked=1.
+  const path = window.location.hash.slice(1).replace(/\?[\w=&.-]*$/, '');
   return /^(account\/(profile|groups|tokens|settings)|profile\/[a-zA-Z0-9_]+)$/.test(path)
     ? path
     : null;
@@ -48,6 +69,12 @@ export default function AccountPage({
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [revision, setRevision] = useState(0);
+  // Null while Keycloak sign-in is not configured (the endpoint returns 404).
+  const [identities, setIdentities] = useState<Identities | null>(null);
+  const [linkResult] = useState(linkResultFromHash);
+  useEffect(() => {
+    if (linkResult) history.replaceState(null, '', '#account/settings');
+  }, []);
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -71,6 +98,14 @@ export default function AccountPage({
           : api<Profile>('/account/profile').then((row) => {
               if (active) setProfile(row);
             });
+    if (!publicView && section === 'settings')
+      api<Identities>('/account/identities')
+        .then((row) => {
+          if (active) setIdentities(row);
+        })
+        .catch(() => {
+          if (active) setIdentities(null);
+        });
     request
       .catch((e) => {
         if (active) setError(e.message);
@@ -332,6 +367,92 @@ export default function AccountPage({
                   Save settings
                 </button>
               </form>
+              {identities && (
+                <section className="account-card linked-identities">
+                  <h2>Keycloak sign-in</h2>
+                  {linkResult && (
+                    <p
+                      role={linkResult.error ? 'alert' : 'status'}
+                      className={linkResult.error ? 'error' : 'success'}
+                    >
+                      {linkResult.text}
+                    </p>
+                  )}
+                  {identities.identities.map((identity) => (
+                    <article className="account-row" key={identity.id}>
+                      <div>
+                        <strong>{identity.username || identity.email || 'Keycloak account'}</strong>
+                        <p>
+                          {[
+                            identity.email,
+                            `Linked ${new Date(identity.created_at).toLocaleDateString()}`,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </p>
+                        <small>
+                          Last sign-in:{' '}
+                          {identity.last_login_at
+                            ? new Date(identity.last_login_at).toLocaleString()
+                            : 'Never'}
+                        </small>
+                      </div>
+                      {identities.has_password && (
+                        <button
+                          className="button secondary"
+                          disabled={busy}
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                'Unlink this Keycloak account? You will sign in with your Arena username and password.',
+                              )
+                            )
+                              void run(async () => {
+                                await api(`/account/identities/${identity.id}`, {
+                                  method: 'DELETE',
+                                });
+                                setIdentities(await api<Identities>('/account/identities'));
+                              }, 'Keycloak account unlinked');
+                          }}
+                        >
+                          Unlink
+                        </button>
+                      )}
+                    </article>
+                  ))}
+                  {!identities.identities.length ? (
+                    <>
+                      <p>
+                        Link your Keycloak account to reach this Arena account with “
+                        {identities.label}”. You will be asked to sign in to Keycloak.
+                      </p>
+                      <div className="form-actions">
+                        <a
+                          className="button secondary"
+                          href={oidcLoginPath('account/settings', true)}
+                        >
+                          Link Keycloak account
+                        </a>
+                      </div>
+                    </>
+                  ) : (
+                    !identities.has_password && (
+                      <p className="auth-notice">
+                        This account signs in only through Keycloak, so it cannot be unlinked.
+                      </p>
+                    )
+                  )}
+                </section>
+              )}
+              {user?.has_password === false ? (
+                <section className="account-card">
+                  <h2>Password</h2>
+                  <p>
+                    Your password is managed in Keycloak. Change it there; Arena does not keep a
+                    password for this account.
+                  </p>
+                </section>
+              ) : (
               <form
                 className="account-card account-form"
                 onSubmit={(event) => {
@@ -371,6 +492,7 @@ export default function AccountPage({
                   Change password
                 </button>
               </form>
+              )}
             </>
           )}
           {!publicView && section === 'tokens' && (

@@ -32,6 +32,10 @@ class Session(Base):
     token_hash = Column(String(64), primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     expires_at = Column(Float, nullable=False)
+    # "password" or "oidc"; logout also ends the Keycloak session for "oidc".
+    auth_method = Column(
+        String(10), nullable=False, default="password", server_default="password"
+    )
 
 
 class Dataset(Base):
@@ -667,6 +671,39 @@ class ContentReport(Base):
     resolved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(String, default=now)
     resolved_at = Column(String, nullable=True)
+
+
+class UserIdentity(Base):
+    """An OpenID Connect account linked to an Arena user; see oidc.py."""
+
+    __tablename__ = "user_identities"
+    __table_args__ = (UniqueConstraint("provider", "subject"),)
+    id = Column(Integer, primary_key=True)
+    # The issuer URL: `sub` values are unique only within one issuer.
+    provider = Column(String(255), nullable=False)
+    subject = Column(String(255), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # Informational copies of the latest claims; never used to find accounts.
+    email = Column(String(320), nullable=False, default="")
+    username_claim = Column(String(255), nullable=False, default="")
+    created_at = Column(String, default=now)
+    last_login_at = Column(String, nullable=True)
+
+
+class OidcLoginAttempt(Base):
+    """A pending single-use authorization request, keyed by the hashed state."""
+
+    __tablename__ = "oidc_login_attempts"
+    state_hash = Column(String(64), primary_key=True)
+    # Hash of the browser-binding cookie set when the attempt started.
+    browser_hash = Column(String(64), nullable=False)
+    code_verifier = Column(String(128), nullable=False)
+    nonce = Column(String(128), nullable=False)
+    next_route = Column(String(255), nullable=False, default="home")
+    # Set when a signed-in user links Keycloak to their existing account.
+    link_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    expires_at = Column(Float, nullable=False, index=True)
+    created_at = Column(String, default=now)
 
 
 class AuditLog(Base):

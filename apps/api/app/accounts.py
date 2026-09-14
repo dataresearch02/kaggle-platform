@@ -22,7 +22,13 @@ from pydantic import BaseModel, Field, HttpUrl
 from sqlalchemy import select, delete, or_
 from sqlalchemy.orm import Session as DBSession
 
-from .auth import current_user, verify_password, hash_password, new_session
+from .auth import (
+    current_user,
+    verify_password,
+    hash_password,
+    has_usable_password,
+    new_session,
+)
 from .code_pages import optional_user
 from .db import get_db
 from .permissions import can_manage
@@ -224,6 +230,8 @@ def password(
     db: DBSession = Depends(get_db),
 ):
     db.refresh(user, with_for_update=True)
+    if not has_usable_password(user.password_hash):
+        raise HTTPException(409, "Your password is managed in Keycloak")
     if not verify_password(data.current_password, user.password_hash):
         raise HTTPException(403, "Current password is incorrect")
     user.password_hash = hash_password(data.new_password)

@@ -4,12 +4,38 @@ export type User = {
   role?: 'user' | 'host' | 'admin';
   status?: 'active' | 'suspended';
   can_create_competitions?: boolean;
+  /** False for accounts created by Keycloak sign-in. */
+  has_password?: boolean;
 };
 export type Site = {
   registration_open: boolean;
   local_login_enabled: boolean;
   announcement: string;
+  oidc_enabled: boolean;
+  oidc_label: string;
 };
+/** Full-page navigation target that starts Keycloak sign-in or account linking. */
+export function oidcLoginPath(next: string, link = false) {
+  const parameters = new URLSearchParams({ next: next.replace(/^#/, '') || 'home' });
+  if (link) parameters.set('link', '1');
+  return `/api/auth/oidc/login?${parameters}`;
+}
+const SSO_ERRORS: Record<string, string> = {
+  state: 'That sign-in attempt is no longer valid. Please try again.',
+  expired: 'Sign-in took too long and expired. Please try again.',
+  denied: 'Sign-in was cancelled.',
+  suspended: 'This account is suspended. Contact an administrator for help.',
+  busy: 'Sign-in is busy right now. Please try again in a few minutes.',
+  signin: 'Sign in to Arena before linking a Keycloak account.',
+  linked: 'That Keycloak account is already linked to a different Arena account.',
+  link_exists: 'Your account is already linked to another Keycloak account. Unlink it first.',
+};
+export function ssoErrorMessage(code: string) {
+  return (
+    SSO_ERRORS[code] ||
+    'Single sign-on did not complete. Please try again, or contact an administrator if this continues.'
+  );
+}
 export type Item = {
   id: number;
   title: string;

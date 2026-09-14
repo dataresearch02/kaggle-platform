@@ -64,10 +64,19 @@ def competition_solution_usage(connection):
     )
 
 
+def session_auth_method(connection):
+    add_columns(
+        connection,
+        "sessions",
+        [("auth_method", "VARCHAR(10) NOT NULL DEFAULT 'password'")],
+    )
+
+
 MIGRATIONS = (
     ("0001_user_role_status", user_role_status),
     ("0002_moderation_hidden", moderation_hidden),
     ("0003_competition_solution_usage", competition_solution_usage),
+    ("0004_session_auth_method", session_auth_method),
 )
 
 

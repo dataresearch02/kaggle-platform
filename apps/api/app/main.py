@@ -180,8 +180,11 @@ app.include_router(version_router)
 app.include_router(team_router)
 app.include_router(engagement_router)
 from .accounts import router as account_router
+from .auth import has_usable_password
+from .oidc import end_session_url, router as oidc_router
 
 app.include_router(account_router)
+app.include_router(oidc_router)
 from .moderation import router as moderation_router
 from .admin import router as admin_router
 from .site_settings import router as site_router
@@ -377,6 +380,8 @@ def account_json(db, user):
     return {
         **public(user),
         "can_create_competitions": can_create_competitions(db, user),
+        # False for accounts created by Keycloak sign-in.
+        "has_password": has_usable_password(user.password_hash),
     }
 
 
@@ -385,15 +390,27 @@ def me(user: User = Depends(current_user), db: DBSession = Depends(get_db)):
     return account_json(db, user)
 
 
-@app.post("/api/auth/logout", status_code=204)
+@app.post(
+    "/api/auth/logout",
+    status_code=204,
+    responses={200: {"description": "Signed out; also visit `end_session_url`"}},
+)
 def logout(request: Request, response: Response, db: DBSession = Depends(get_db)):
     token = request.cookies.get(COOKIE)
     session = (
         db.get(Session, hashlib.sha256(token.encode()).hexdigest()) if token else None
     )
+    single_sign_out = None
     if session:
+        if session.auth_method == "oidc":
+            # No ID token is kept, so the URL carries client_id instead of a hint.
+            single_sign_out = end_session_url(request)
         db.delete(session)
         db.commit()
+    if single_sign_out:
+        result = JSONResponse({"end_session_url": single_sign_out})
+        result.delete_cookie(COOKIE, path="/")
+        return result
     response.delete_cookie(COOKIE, path="/")
 
 

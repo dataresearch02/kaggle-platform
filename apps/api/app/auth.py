@@ -10,6 +10,8 @@ from .models import Session, User
 
 COOKIE = "arena_session"
 SUSPENDED = "This account is suspended. Contact an administrator for help."
+# Password work is still performed against this for unknown or SSO-only accounts.
+DUMMY_HASH = "0" * 32 + ":" + "0" * 128
 
 
 def require_active(user):
@@ -26,21 +28,34 @@ def hash_password(password):
     return f"{salt}:{digest}"
 
 
+def unusable_password():
+    """A password_hash marker for accounts that sign in only through Keycloak."""
+    return "!" + secrets.token_hex(16)
+
+
+def has_usable_password(stored):
+    return bool(stored) and not stored.startswith("!") and stored.count(":") == 1
+
+
 def verify_password(password, stored):
-    salt, expected = stored.split(":")
+    # Unusable markers never match, but still cost scrypt work so response
+    # timing does not reveal which accounts are SSO-only.
+    usable = has_usable_password(stored)
+    salt, expected = (stored if usable else DUMMY_HASH).split(":")
     actual = hashlib.scrypt(
         password.encode(), salt=salt.encode(), n=16384, r=8, p=1
     ).hex()
-    return hmac.compare_digest(expected, actual)
+    return usable and hmac.compare_digest(expected, actual)
 
 
-def new_session(db, user, response):
+def new_session(db, user, response, method="password"):
     token = secrets.token_urlsafe(32)
     db.add(
         Session(
             token_hash=hashlib.sha256(token.encode()).hexdigest(),
             user_id=user.id,
             expires_at=time.time() + 604800,
+            auth_method=method,
         )
     )
     db.commit()

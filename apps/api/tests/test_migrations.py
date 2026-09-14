@@ -34,7 +34,13 @@ OLD_SCHEMA = [
         size INTEGER,
         created_at VARCHAR
     )""",
+    """CREATE TABLE sessions (
+        token_hash VARCHAR(64) PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        expires_at FLOAT NOT NULL
+    )""",
     "INSERT INTO users (id, username, password_hash) VALUES (1, 'veteran', 'x:y')",
+    "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ('old', 1, 1.0)",
     "INSERT INTO competitions (id, title, description, deadline, solution)"
     " VALUES (1, 'Old', 'Kept', '2030-01-01T00:00:00+00:00', '{\"1\": 2}')",
     "INSERT INTO datasets (id, owner_id, title, description, filename, storage_key)"
@@ -79,4 +85,5 @@ def test_migrations_upgrade_an_old_schema_and_are_idempotent():
     assert len(run_migrations(engine)) == len(MIGRATIONS)
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT hidden FROM datasets")) == 0
+        assert connection.scalar(text("SELECT auth_method FROM sessions")) == "password"
     engine.dispose()

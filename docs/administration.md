@@ -12,7 +12,9 @@ Arena has three roles, two account states, a small set of site settings, communi
 
 `status` is `active` or `suspended`. A suspended account keeps its content, but sign-in, cookie sessions and API tokens are rejected with `This account is suspended. Contact an administrator for help.` Suspended browsers see public pages as an anonymous visitor. Reactivating the account makes existing sessions and tokens work again; use **Revoke sessions** or **Reset password** to invalidate them.
 
-`/api/auth/me` (and the login/register responses) include `role`, `status` and `can_create_competitions`. Public profiles include `role`.
+`/api/auth/me` (and the login/register responses) include `role`, `status`, `can_create_competitions` and `has_password` (false for accounts created by Keycloak sign-in). Public profiles include `role`.
+
+Keycloak (OpenID Connect) sign-in, account linking and group-based roles are described in [authentication.md](authentication.md).
 
 ## Bootstrap administrators
 
@@ -49,12 +51,12 @@ Stored in the `site_settings` table as JSON values. Missing rows use the default
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `registration_open` | `true` | When `false`, `POST /api/auth/register` returns 403 and the UI hides registration. |
-| `local_login_enabled` | `true` | When `false`, username and password sign-in is refused for everyone except administrators (break-glass access). Existing sessions keep working. This is intended for installations that add an external identity provider. |
+| `registration_open` | `true` | When `false`, `POST /api/auth/register` returns 403 and the UI hides registration. First Keycloak sign-in still creates accounts. |
+| `local_login_enabled` | `true` | When `false`, username and password sign-in is refused for everyone except administrators (break-glass access). Existing sessions keep working. This is intended for installations that use Keycloak sign-in: the sign-in dialog then shows only the Keycloak button, and administrators use `#login?local=1`. Keycloak sign-in is not affected. |
 | `competition_creation` | `hosts` | `hosts`: only `host` and `admin` users may create competitions and CSV benchmarks. `everyone`: any active member may. Enforced on `POST /api/competitions` and `POST /api/benchmarks`. |
 | `announcement` | empty | Markdown shown to every visitor as a dismissible banner. Dismissal is remembered per browser until the text changes. |
 
-`GET /api/site` returns the public subset (`registration_open`, `local_login_enabled`, `announcement`). `GET/PUT /api/admin/settings` reads and partially updates all settings.
+`GET /api/site` returns the public subset (`registration_open`, `local_login_enabled`, `announcement`) plus `oidc_enabled` and `oidc_label` from the deployment configuration. `GET/PUT /api/admin/settings` reads and partially updates all settings.
 
 **Upgrade note:** existing members lose the ability to create competitions until they are made hosts or the setting is changed to `everyone`.
 
@@ -84,7 +86,9 @@ The UI shows **Report** on discussion topics and comments, replies, code pages, 
 
 | Action | Recorded when |
 | --- | --- |
-| `user.role`, `user.status` | Role or status changed by an admin, the CLI or `ARENA_ADMIN_USERNAMES` (`detail.from`, `detail.to`, `detail.source`) |
+| `user.role`, `user.status` | Role or status changed by an admin, the CLI, `ARENA_ADMIN_USERNAMES` or Keycloak group sync (`detail.from`, `detail.to`, `detail.source`, e.g. `oidc_groups`) |
+| `user.sso_create` | An account was created by a first Keycloak sign-in (system actor; issuer, subject, `preferred_username`) |
+| `user.identity_link`, `user.identity_unlink` | A user linked or unlinked a Keycloak identity |
 | `user.password_reset`, `user.sessions_revoked` | Admin credential actions, with revoked counts |
 | `settings.update` | Changed settings with old and new values |
 | `content.hide`, `content.unhide`, `content.delete` | Moderation, including admin deletion of another user's work |
@@ -105,8 +109,9 @@ Catalog lists keep their JSON array responses and accept `offset` and `limit` (a
 | `0001_user_role_status` | `users.role` (default `user`), `users.status` (default `active`) |
 | `0002_moderation_hidden` | `hidden` and `hidden_reason` on `datasets`, `notebooks`, `model_cards`, `competition_posts`, `content_replies`, `notebook_comments` and `user_profiles` |
 | `0003_competition_solution_usage` | `competitions.solution_usage`: private per-id answer usage (`Public`/`Private`) kept for future public/private leaderboards |
+| `0004_session_auth_method` | `sessions.auth_method` (default `password`; `oidc` for Keycloak sessions, used for single sign-out) |
 
-New tables (`schema_migrations`, `site_settings`, `content_reports`, `audit_log`) are created by `create_all`. To add a column, append a new migration to `MIGRATIONS`; never edit or reorder applied ones. Run a single API process while migrations apply.
+New tables (`schema_migrations`, `site_settings`, `content_reports`, `audit_log`, `user_identities`, `oidc_login_attempts`) are created by `create_all`. To add a column, append a new migration to `MIGRATIONS`; never edit or reorder applied ones. Run a single API process while migrations apply.
 
 ## Offline practice competitions
 
@@ -118,3 +123,6 @@ At startup Arena imports four practice competitions from `apps/api/app/practice_
 | --- | --- | --- |
 | `ARENA_ADMIN_USERNAMES` | empty | Comma-separated existing usernames promoted to `admin` at startup |
 | `ARENA_IMPORT_PRACTICE` | `true` | Import the offline practice competitions at startup |
+| `ARENA_OIDC_ISSUER`, `ARENA_OIDC_CLIENT_ID`, `ARENA_OIDC_CLIENT_SECRET` | empty | Keycloak sign-in; enabled only when all three are set. See [authentication.md](authentication.md) |
+| `ARENA_OIDC_CA_FILE`, `ARENA_PUBLIC_URL`, `ARENA_OIDC_LABEL` | empty / request URL / `Sign in with Keycloak` | Keycloak TLS CA bundle, public base URL for redirects, button text |
+| `ARENA_OIDC_ADMIN_GROUPS`, `ARENA_OIDC_HOST_GROUPS` | empty | Comma-separated Keycloak groups mapped to `admin`/`host` at each Keycloak sign-in |

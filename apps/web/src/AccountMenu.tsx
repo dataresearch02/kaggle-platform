@@ -164,9 +164,14 @@ export default function AccountMenu({
               setBusy(true);
               setError('');
               try {
-                await api('/auth/logout', { method: 'POST' });
+                const result = await api<{ end_session_url?: string } | undefined>(
+                  '/auth/logout',
+                  { method: 'POST' },
+                );
                 close();
                 logout();
+                // Keycloak sessions also end at the identity provider, which returns here.
+                if (result?.end_session_url) window.location.assign(result.end_session_url);
               } catch (e) {
                 setError((e as Error).message);
               } finally {
