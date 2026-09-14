@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowUpRight, Search } from 'lucide-react';
 import { api, apiPage, type Site, type User } from './api';
 import Markdown from './Markdown';
+import type { Forum } from './Community';
 import {
   ReasonDialog,
   moderate,
@@ -10,12 +11,13 @@ import {
   type ReportKind,
 } from './Moderation';
 
-export const adminTabs = ['users', 'reports', 'hidden', 'audit', 'settings'] as const;
+export const adminTabs = ['users', 'reports', 'hidden', 'community', 'audit', 'settings'] as const;
 export type AdminTab = (typeof adminTabs)[number];
 const tabLabels: Record<AdminTab, string> = {
   users: 'Users',
   reports: 'Reports',
   hidden: 'Hidden content',
+  community: 'Community',
   audit: 'Audit log',
   settings: 'Settings',
 };
@@ -206,6 +208,7 @@ export default function AdminPage({
         {tab === 'users' && <UsersTab user={user} />}
         {tab === 'reports' && <ReportsTab />}
         {tab === 'hidden' && <HiddenTab />}
+        {tab === 'community' && <CommunityTab />}
         {tab === 'audit' && <AuditTab />}
         {tab === 'settings' && <SettingsTab siteChanged={siteChanged} />}
       </div>
@@ -890,5 +893,180 @@ function SettingsTab({ siteChanged }: { siteChanged: (site: PublicSettings) => v
         {busy ? 'Saving…' : 'Save settings'}
       </button>
     </form>
+  );
+}
+
+function CommunityTab() {
+  const [forums, setForums] = useState<Forum[]>([]);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = async () => setForums(await api<Forum[]>('/forums?include_archived=true'));
+  useEffect(() => {
+    load().catch((e) => setError(e.message));
+  }, []);
+  async function run(action: () => Promise<void>, message: string) {
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await action();
+      if (message) setNotice(message);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function move(index: number, offset: number) {
+    const ids = forums.map((forum) => forum.id);
+    [ids[index], ids[index + offset]] = [ids[index + offset], ids[index]];
+    void run(async () => {
+      setForums(
+        await api<Forum[]>('/admin/forums/order', { method: 'PUT', body: JSON.stringify({ ids }) }),
+      );
+    }, 'Forum order saved');
+  }
+  return (
+    <div className="admin-community">
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+      {notice && (
+        <p className="success" role="status">
+          {notice}
+        </p>
+      )}
+      <section className="admin-card">
+        <h2>Forums</h2>
+        <p className="muted">
+          Forums appear on the Discussions page in this order. Archived forums stay readable but
+          accept no new topics or comments.
+        </p>
+        <ul className="admin-forums">
+          {forums.map((forum, index) => (
+            <li key={`${forum.id}-${forum.title}-${forum.description}-${forum.archived}`}>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const data = new FormData(event.currentTarget);
+                  void run(async () => {
+                    await api(`/admin/forums/${forum.id}`, {
+                      method: 'PUT',
+                      body: JSON.stringify({
+                        title: data.get('title'),
+                        description: data.get('description'),
+                      }),
+                    });
+                    await load();
+                  }, `Saved ${forum.title}`);
+                }}
+              >
+                <label>
+                  Title
+                  <input name="title" defaultValue={forum.title} required minLength={3} maxLength={80} />
+                </label>
+                <label>
+                  Description
+                  <input name="description" defaultValue={forum.description} maxLength={1000} />
+                </label>
+                <div className="admin-row-actions">
+                  <button className="button secondary small" disabled={busy}>
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    className="text-button"
+                    disabled={busy || index === 0}
+                    onClick={() => move(index, -1)}
+                  >
+                    Move up
+                  </button>
+                  <button
+                    type="button"
+                    className="text-button"
+                    disabled={busy || index === forums.length - 1}
+                    onClick={() => move(index, 1)}
+                  >
+                    Move down
+                  </button>
+                  <button
+                    type="button"
+                    className="text-button"
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        await api(`/admin/forums/${forum.id}`, {
+                          method: 'PUT',
+                          body: JSON.stringify({ archived: !forum.archived }),
+                        });
+                        await load();
+                      }, forum.archived ? `${forum.title} restored` : `${forum.title} archived`)
+                    }
+                  >
+                    {forum.archived ? 'Unarchive' : 'Archive'}
+                  </button>
+                  {forum.archived && <span className="admin-badge suspended">archived</span>}
+                  <span className="muted">{forum.topic_count} topics</span>
+                  <a className="text-button" href={`#discussions/forums/${forum.id}`}>
+                    Open forum
+                  </a>
+                </div>
+              </form>
+            </li>
+          ))}
+        </ul>
+        <form
+          className="admin-forum-create"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const form = event.currentTarget;
+            const data = Object.fromEntries(new FormData(form));
+            void run(async () => {
+              await api('/admin/forums', { method: 'POST', body: JSON.stringify(data) });
+              form.reset();
+              await load();
+            }, 'Forum created');
+          }}
+        >
+          <h3>Create a forum</h3>
+          <label>
+            Title
+            <input name="title" required minLength={3} maxLength={80} />
+          </label>
+          <label>
+            Description
+            <input name="description" maxLength={1000} />
+          </label>
+          <button className="button" disabled={busy}>
+            Create forum
+          </button>
+        </form>
+      </section>
+      <section className="admin-card">
+        <h2>Progression</h2>
+        <p className="muted">
+          Medals, tiers and rankings are cached and updated as votes, publications, moderation and
+          competition results change. Recalculating rebuilds the cache for every user from the
+          source data.
+        </p>
+        <button
+          className="button secondary"
+          disabled={busy}
+          onClick={() =>
+            void run(async () => {
+              const result = await api<{ users: number }>('/admin/progression/recalculate', {
+                method: 'POST',
+              });
+              setNotice(`Recalculated progression for ${result.users} users`);
+            }, '')
+          }
+        >
+          Recalculate progression
+        </button>
+      </section>
+    </div>
   );
 }

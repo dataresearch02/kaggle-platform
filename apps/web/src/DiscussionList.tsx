@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
-  ArrowUp,
   Bookmark,
+  Lock,
   MessageSquare,
   Pin,
   Plus,
@@ -9,37 +9,65 @@ import {
   SlidersHorizontal,
 } from 'lucide-react';
 import { api, type User } from './api';
-import DiscussionCreate from './DiscussionCreate';
+import DiscussionCreate, { type DiscussionScope } from './DiscussionCreate';
 import DiscussionAvatar from './DiscussionAvatar';
+import { TierBadge, VoteButton } from './Community';
 export type Topic = {
   id: number;
-  competition_id: number;
+  competition_id: number | null;
+  scope: DiscussionScope;
+  scope_id: number;
+  scope_title: string | null;
+  url: string;
   owner_id: number;
   title: string;
   owner: string;
+  owner_tier?: string | null;
   created_at: string;
   last_activity: string;
   comment_count: number;
   votes: number;
   pinned: boolean;
+  locked: boolean;
   bookmarked: boolean;
   voted: boolean;
   hidden?: boolean;
 };
+const scopeLabels: Record<DiscussionScope, string> = {
+  competition: 'Competition',
+  forum: 'Forum',
+  dataset: 'Dataset',
+  model: 'Model',
+};
 export default function DiscussionList({
   competitionId,
+  scope,
+  scopeId,
+  scopeTitle,
+  heading,
   user,
   signIn,
   initialQuery = '',
+  initialSort = 'recent',
+  pageSize,
 }: {
   competitionId?: number;
+  scope?: DiscussionScope;
+  scopeId?: number;
+  scopeTitle?: string;
+  heading?: string;
   user: User | null;
   signIn: () => void;
   initialQuery?: string;
+  initialSort?: string;
+  pageSize?: number;
 }) {
+  const listScope = competitionId ? 'competition' : scope;
+  const listScopeId = competitionId ?? scopeId;
+  const scoped = listScope !== undefined && listScopeId !== undefined;
   const [query, setQuery] = useState(initialQuery);
   const [filter, setFilter] = useState('all');
-  const [sort, setSort] = useState('recent');
+  const [sort, setSort] = useState(initialSort);
   const [unanswered, setUnanswered] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -50,6 +78,7 @@ export default function DiscussionList({
   const [busy, setBusy] = useState(false);
   const [mutating, setMutating] = useState(false);
   const [canPin, setCanPin] = useState(false);
+  const [canPost, setCanPost] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => {
     setQuery(initialQuery);
@@ -68,10 +97,15 @@ export default function DiscussionList({
         unanswered: String(unanswered),
         offset: String(offset),
       });
-      if (competitionId) params.set('competition_id', String(competitionId));
-      api<{ items: Topic[]; next_offset: number | null; can_pin: boolean }>(
-        `/competition-discussions?${params}`,
-      )
+      if (pageSize) params.set('limit', String(pageSize));
+      if (listScope) params.set('scope', listScope);
+      if (listScopeId !== undefined) params.set('scope_id', String(listScopeId));
+      api<{
+        items: Topic[];
+        next_offset: number | null;
+        can_pin: boolean;
+        can_post: boolean;
+      }>(`/competition-discussions?${params}`)
         .then((data) => {
           if (active) {
             setItems((old) =>
@@ -81,6 +115,7 @@ export default function DiscussionList({
             );
             setNext(data.next_offset);
             setCanPin(data.can_pin);
+            setCanPost(data.can_post);
           }
         })
         .catch((e) => {
@@ -94,8 +129,8 @@ export default function DiscussionList({
       active = false;
       clearTimeout(timer);
     };
-  }, [competitionId, query, filter, sort, unanswered, offset, revision, user?.id]);
-  async function action(row: Topic, kind: 'bookmark' | 'pin' | 'vote') {
+  }, [listScope, listScopeId, query, filter, sort, unanswered, offset, revision, user?.id]);
+  async function action(row: Topic, kind: 'bookmark' | 'pin') {
     if (!user) {
       signIn();
       return;
@@ -103,15 +138,10 @@ export default function DiscussionList({
     setMutating(true);
     setError('');
     try {
-      if (kind === 'vote')
-        await api(`/engagement/competition-post/${row.id}/reactions/like`, {
-          method: row.voted ? 'DELETE' : 'PUT',
-        });
-      else
-        await api(`/competition-discussions/${row.id}/${kind}`, {
-          method: 'PUT',
-          body: JSON.stringify({ enabled: kind === 'pin' ? !row.pinned : !row.bookmarked }),
-        });
+      await api(`/competition-discussions/${row.id}/${kind}`, {
+        method: 'PUT',
+        body: JSON.stringify({ enabled: kind === 'pin' ? !row.pinned : !row.bookmarked }),
+      });
       setOffset(0);
       setRevision((v) => v + 1);
     } catch (e) {
@@ -123,8 +153,8 @@ export default function DiscussionList({
   return (
     <section className="discussion-list" aria-label="Discussion topics">
       <header className="discussion-list-heading">
-        <h2>{competitionId ? 'Discussion' : 'Discussions'}</h2>
-        {competitionId && (
+        <h2>{heading || (scoped ? 'Discussion' : 'Discussions')}</h2>
+        {scoped && canPost && (
           <button
             className="button secondary"
             onClick={() => (user ? setCreating(true) : signIn())}
@@ -166,7 +196,7 @@ export default function DiscussionList({
       )}
       <div className="discussion-list-controls">
         <div role="group" aria-label="Filter discussions">
-          {['all', 'owned', 'bookmarks'].map((value) => (
+          {['all', 'owned', 'bookmarks', 'watching'].map((value) => (
             <button
               key={value}
               aria-pressed={filter === value}
@@ -179,7 +209,16 @@ export default function DiscussionList({
                 setOffset(0);
               }}
             >
-              {value === 'all' ? 'All' : value === 'owned' ? 'Owned' : 'Bookmarks'}
+              {
+                (
+                  {
+                    all: 'All',
+                    owned: 'Owned',
+                    bookmarks: 'Bookmarks',
+                    watching: 'Watching',
+                  } as Record<string, string>
+                )[value]
+              }
             </button>
           ))}
         </div>
@@ -192,6 +231,7 @@ export default function DiscussionList({
           }}
         >
           <option value="recent">Recent Comments</option>
+          <option value="hot">Hot</option>
           <option value="newest">Newest Topics</option>
           <option value="votes">Most Votes</option>
           <option value="comments">Most Comments</option>
@@ -214,28 +254,42 @@ export default function DiscussionList({
               <article className="discussion-topic-row" key={row.id}>
                 <DiscussionAvatar username={row.owner} pinned={row.pinned} />
                 <div className="discussion-topic-copy">
-                  <a href={`#competitions/${row.competition_id}/discussion/${row.id}`}>
+                  <a href={row.url}>
                     <h3>
                       {row.title}
+                      {row.locked && (
+                        <span className="topic-state" title="Locked">
+                          <Lock size={14} aria-label="Locked" />
+                        </span>
+                      )}
                       {row.hidden && <span className="moderation-badge">Hidden</span>}
                     </h3>
                   </a>
                   <p>
-                    {row.owner} · {row.comment_count ? 'Last comment' : 'Posted'}{' '}
+                    {row.owner} <TierBadge tier={row.owner_tier} /> ·{' '}
+                    {row.comment_count ? 'Last comment' : 'Posted'}{' '}
                     {new Date(row.last_activity).toLocaleDateString()}
+                    {!scoped && row.scope_title && (
+                      <>
+                        {' · '}
+                        <span className="topic-scope">
+                          {scopeLabels[row.scope]}: {row.scope_title}
+                        </span>
+                      </>
+                    )}
                   </p>
                 </div>
                 <div className="discussion-topic-actions">
-                  <button
-                    className="discussion-votes"
-                    aria-label={`Upvote ${row.title}`}
-                    aria-pressed={row.voted}
-                    disabled={mutating}
-                    onClick={() => void action(row, 'vote')}
-                  >
-                    <ArrowUp size={14} />
-                    {row.votes}
-                  </button>
+                  <VoteButton
+                    kind="competition-post"
+                    id={row.id}
+                    votes={row.votes}
+                    voted={row.voted}
+                    ownerId={row.owner_id}
+                    user={user}
+                    signIn={signIn}
+                    label={row.title}
+                  />
                   <span>
                     <MessageSquare size={14} /> {row.comment_count} comments
                   </span>
@@ -268,7 +322,7 @@ export default function DiscussionList({
       {!busy && !error && !items.length && (
         <div className="empty">
           <h3>No discussions found</h3>
-          <p>Try another search or filter.</p>
+          <p>{scoped && canPost ? 'Start the first discussion.' : 'Try another search or filter.'}</p>
         </div>
       )}
       {next !== null && !busy && (
@@ -276,8 +330,13 @@ export default function DiscussionList({
           Load more topics
         </button>
       )}
-      {creating && competitionId && (
-        <DiscussionCreate competitionId={competitionId} close={() => setCreating(false)} />
+      {creating && listScope && listScopeId !== undefined && (
+        <DiscussionCreate
+          scope={listScope}
+          scopeId={listScopeId}
+          scopeTitle={scopeTitle}
+          close={() => setCreating(false)}
+        />
       )}
     </section>
   );

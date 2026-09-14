@@ -20,6 +20,7 @@ import CompetitionData from './CompetitionData';
 import CompetitionHost from './CompetitionHost';
 import { JoinRulesDialog, MedalBadge, RankChange, RulesSummary } from './CompetitionRules';
 import type { WorkItem } from './YourWork';
+import { TierBadge } from './Community';
 
 export const competitionTabs = [
   'overview',
@@ -458,7 +459,9 @@ export default function CompetitionPage({
                       {board.items.map((row) => (
                         <tr key={`${row.team_id ?? ''}-${row.username}`}>
                           <td>#{row.rank}</td>
-                          <td>{row.username}</td>
+                          <td>
+                            {row.username} <TierBadge tier={row.tier} />
+                          </td>
                           <td>{formatScore(row.score)}</td>
                           {boardView === 'private' && (
                             <>

@@ -13,7 +13,7 @@ a usable UI, persistence, and workflow verification before it is complete.
 - [ ] Compute: CPU/GPU configuration, availability checks and usage tracking.
 - [ ] Storage: multiple files, artifact versions, safe previews/downloads, dataset/model attachments.
 - [ ] Accounts: recovery and verification. Roles, suspension, reports, moderation and the audit log are implemented ([administration](administration.md)).
-- [ ] Community: notifications, following, profiles and reputation.
+- [x] Community: forums, notifications, following, votes, activity feeds, search, profiles with medals, tiers and rankings ([community](community.md)).
 - [ ] Learning: graded exercises, hints and assessments.
 - [ ] Automation: scheduled notebooks and supported API credentials.
 - [ ] Operations: backup/restore verification, observability and deployment readiness. Additive startup schema migrations are implemented.
@@ -26,7 +26,8 @@ deferred until local container acceptance, as requested.
 
 Notebook save history and restore UI; private dataset/notebook access and sharing;
 a metric registry with public/private leaderboards, daily limits, final selection,
-rules acceptance, timelines, host tools and medals; team-owned submission history and leaderboard;
+rules acceptance, timelines, host tools and medals; site forums, votes, mentions, notifications,
+follows, activity feeds, site search, tiers and rankings; team-owned submission history and leaderboard;
 a separate CPU evaluation worker with cancellation and restart recovery; immutable
 supplemental dataset/model file versions and downloads. Model URLs are optional.
 

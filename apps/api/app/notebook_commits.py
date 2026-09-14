@@ -424,6 +424,10 @@ def complete_commit(job_id, document, predictions, output_files=None):
 
             capture_completed_job(db, job, output_files)
         job.status, job.score, job.document = "succeeded", score, json.dumps(document)
+        from .progression import mark_related
+
+        # Publication and the submission can change notebook and competition tiers.
+        mark_related(db, "code", notebook.id)
         db.commit()
 
 

@@ -75,6 +75,16 @@ def finalize(db, competition, actor=None, force=False):
         return False
     ranking = final_ranking(db, locked)
     medals = awards_medals(db, locked)
+    from .progression import mark_dirty
+
+    mark_dirty(
+        db,
+        *db.scalars(
+            select(CompetitionResult.user_id).where(
+                CompetitionResult.competition_id == locked.id
+            )
+        ),
+    )
     db.execute(
         delete(CompetitionResult).where(CompetitionResult.competition_id == locked.id)
     )
@@ -109,6 +119,28 @@ def finalize(db, competition, actor=None, force=False):
                 )
             )
     locked.finalized_at = now()
+    db.flush()
+    from .notifications import notify
+
+    mark_dirty(db, *placed)
+    for result in db.scalars(
+        select(CompetitionResult).where(CompetitionResult.competition_id == locked.id)
+    ):
+        notify(
+            db,
+            result.user_id,
+            "result",
+            target_kind="competition",
+            target_id=locked.id,
+            detail={
+                "rank": result.rank,
+                "team_count": result.team_count,
+                "medal": result.medal,
+            },
+            # One notification per competition, refreshed if results change.
+            group_key=f"result:{locked.id}",
+            replace=True,
+        )
     record(
         db,
         actor,
@@ -132,6 +164,16 @@ def refresh_results(db, competition, actor=None):
     if timeline(db, competition).ended():
         finalize(db, competition, actor, force=True)
     elif competition.finalized_at:
+        from .progression import mark_dirty
+
+        mark_dirty(
+            db,
+            *db.scalars(
+                select(CompetitionResult.user_id).where(
+                    CompetitionResult.competition_id == competition.id
+                )
+            ),
+        )
         db.execute(
             delete(CompetitionResult).where(
                 CompetitionResult.competition_id == competition.id

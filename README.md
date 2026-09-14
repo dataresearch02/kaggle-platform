@@ -18,7 +18,7 @@ Open **http://localhost:8080** and create an account. API documentation is avail
 
 ## Your work
 
-After you save a notebook, upload a dataset, or publish a model or challenge, **Your work** appears last in the sidebar, separated from the other items by a divider. Learn and Discussions are grouped under **More**. Datasets, Models, Codes, Competitions and Benchmarks also link to the corresponding category in your personal workspace. Search and filter your content, open it, edit its title and description, or download datasets and published code notebooks. Ownership is checked on the server. Temporary unsaved notebooks and other users' examples are excluded. This view uses existing persistent records; it does not duplicate your data. Use the trash button to delete an owned item after reviewing the confirmation. Dataset uploads are removed; notebook files are queued for cleanup when the runtime is ready. Challenge deletion also removes its entries and submissions. Copies already downloaded or attached to other workspaces remain. Bulk actions are not implemented.
+After you save a notebook, upload a dataset, or publish a model or challenge, **Your work** appears last in the sidebar, separated from the other items by a divider. Learn, Discussions and Rankings are grouped under **More**. The header has a site search box (`#search`) and, for signed-in users, a notification bell. Datasets, Models, Codes, Competitions and Benchmarks also link to the corresponding category in your personal workspace. Search and filter your content, open it, edit its title and description, or download datasets and published code notebooks. Ownership is checked on the server. Temporary unsaved notebooks and other users' examples are excluded. This view uses existing persistent records; it does not duplicate your data. Use the trash button to delete an owned item after reviewing the confirmation. Dataset uploads are removed; notebook files are queued for cleanup when the runtime is ready. Challenge deletion also removes its entries and submissions. Copies already downloaded or attached to other workspaces remain. Bulk actions are not implemented.
 
 ## Integrated notebooks
 
@@ -74,7 +74,7 @@ Creator metadata, test data, answers and scores persist in PostgreSQL. A new `ch
 4. Open **Competitions → Predict bike demand**, join (read and accept the rules), and download test data and the sample submission.
 5. Create a notebook, or open a saved notebook and click **Start session**. Use Python to load a dataset download URL, then train a baseline in the Arena editor. The Intro to machine learning course includes example code.
 6. Open the competition’s **Submissions** tab and upload a UTF-8 CSV with exactly `id,prediction` columns and IDs 7, 8, and 9. Arena calculates RMSE and updates the leaderboard with your best score. You can submit five times per UTC day.
-7. Share an approach in Discussions or publish a model reference card.
+7. Share an approach in a Discussions forum or on a dataset or model page, upvote helpful work, follow people, and track medals and tiers on your profile and in Rankings.
 
 ## Project structure
 
@@ -100,6 +100,14 @@ apps/
       competition_policy.py  Rules acceptance, timeline, daily limits and host checks
       competition_host.py    Host tools, rules, final selection and metric API
       competition_results.py Finalization, medals, private leaderboard and rescoring
+      community.py     Shared visibility, links, mentions and revisions for community features
+      discussion_feed.py Topics in competitions, forums, datasets and models; edit, lock, watch
+      forums.py        Site forums, forum administration and legacy discussion aliases
+      votes.py         Upvotes on code, datasets, models, topics and comments
+      notifications.py In-app notifications, preferences and service notice integration
+      follows.py       Follows, follower lists and public activity feeds
+      search.py        Site search across content types
+      progression.py   Medals, tiers, rankings and the recomputable progression cache
       notebook_runtime.py  Hub lifecycle, first-open import and private export
       seed.py          Synthetic starter datasets, challenge, courses and notebook
     tests/             API workflow, access control and scoring tests
@@ -167,7 +175,7 @@ The API also exposes `/api/health`. POST/PUT requests require `X-Arena-Client: w
 - Interactive notebooks use the native Arena editor and per-user Jupyter containers. Compose evaluates competition commits through a separate CPU worker with disposable offline containers, cancellation, resource limits and restart recovery. OpenShift can use KubeSpawner and GPU-enabled Kubernetes Jobs; see [the core workflow and OpenShift GPU guide](docs/openshift-gpu.md).
 - Dataset and model details support immutable additional file versions and downloads (10 MB per file). Model cards can contain hosted files and optional external links. Notebook inputs pin file versions. Large artifact storage and hosted inference remain incomplete.
 - Courses contain lessons and per-user completion tracking; exercises are not automatically graded.
-- Accounts, public discussions and replies are implemented, with `user`/`host`/`admin` roles, account suspension, site settings, content reports, moderation and an audit log; see [administration](docs/administration.md). Email verification, self-service password recovery, OAuth, quotas and rate limiting remain future work.
+- Accounts, site forums, competition/dataset/model discussions with editing, locking and @mentions, in-app notifications, votes, follows, activity feeds, site search, medals, tiers and rankings are implemented ([community](docs/community.md)), with `user`/`host`/`admin` roles, account suspension, site settings, content reports, moderation and an audit log; see [administration](docs/administration.md). Notifications are in-app only (no email). Email verification, self-service password recovery, OAuth, quotas and rate limiting remain future work.
 - Schema creation, additive schema migrations, starter seeding and the offline practice competition import run at startup. Use one API process while they run; coordinated bootstrap is required before scaling.
 - The container runtime is intended for a trusted local community. The native editor sanitizes outputs and blocks direct Jupyter UI access; runtime network isolation and resource quotas still need hardening before accepting hostile workloads. The Hub and the trusted evaluation broker mount the container-runtime socket; the API and evaluation job containers do not. Compose binds published ports to loopback. Public deployment needs HTTPS, secure cookies (`COOKIE_SECURE=true`), explicit origins, managed secrets, migrations, backups, upload policy, abuse controls, and isolated compute.
 
@@ -190,7 +198,7 @@ Run `make format` to format the project, or `make format-check` to verify format
 
 Competition cards open full pages at `#competitions/<id>/overview`. Overview, Data, Code, Models, Discussion, Leaderboard, Rules, Team and Submissions have shareable tab URLs and support browser back/forward navigation. The header provides Join competition and shows membership or closed status. Data previews public features only and offers test/sample CSV downloads. Leaderboard switches between the public leaderboard and the private leaderboard, which is published after the end (hosts can preview it) with rank changes and medals. Submissions contains prediction uploads and the signed-in user's latest 100 scored submissions, including timestamps. Team supports creating a team, joining by invite code, listing members and leaving. Team membership and submission attribution persist in PostgreSQL. Team scores aggregate on the leaderboard. Membership changes lock after submissions or pending evaluations, and close at the entry and team merger deadlines. Team members share the daily submission limit and final selections.
 
-Creators can link their published Codes and model cards to a competition. These tabs show linked resources, not unrelated community content. Discussion posts are stored per competition. Rules show the host's rules (edited in the Host tab, with material changes requiring members to accept again) and the enforced submission format, size, limits, timeline and scoring behavior. Competition deletion removes its resource links and discussion posts while retaining the independently published notebooks and model cards.
+Creators can link their published Codes and model cards to a competition. These tabs show linked resources, not unrelated community content. Discussion posts are stored per competition; site forums and dataset and model pages use the same discussion model ([discussions](docs/discussions.md)). Rules show the host's rules (edited in the Host tab, with material changes requiring members to accept again) and the enforced submission format, size, limits, timeline and scoring behavior. Competition deletion removes its resource links and discussion posts while retaining the independently published notebooks and model cards.
 
 ### Optional Kaggle practice content
 

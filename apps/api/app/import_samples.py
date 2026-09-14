@@ -23,7 +23,7 @@ from .models import (
     CompetitionPost,
     CompetitionResource,
     Dataset,
-    Discussion,
+    Forum,
     Notebook,
     NotebookPublication,
     SampleImport,
@@ -434,7 +434,14 @@ def import_samples(db, data_dir=DATA_DIR):
                         + credit,
                     )
                 )
-            discussion = Discussion(
+            from .migrations import ensure_default_forums
+
+            ensure_default_forums(db.connection())
+            general = db.scalar(select(Forum).where(Forum.slug == "general"))
+            discussion = CompetitionPost(
+                competition_id=None,
+                scope="forum",
+                scope_id=general.id if general else None,
                 owner_id=owner.id,
                 title=f"{name}: share your first experiment",
                 body="Original Arena discussion prompt, not a copied Kaggle community post. "

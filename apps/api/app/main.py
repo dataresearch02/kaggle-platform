@@ -42,13 +42,11 @@ from .site_settings import can_create_competitions, setting
 from .db import Base, DATA_DIR, SessionLocal, engine, get_db
 from .models import (
     ChallengeDetails,
-    Comment,
     Competition,
     CompetitionResource,
     CompetitionPost,
     Course,
     Dataset,
-    Discussion,
     Entry,
     ModelCard,
     Notebook,
@@ -62,9 +60,7 @@ from .models import (
     now,
 )
 from .schemas import (
-    CommentInput,
     Credentials,
-    DiscussionInput,
     ModelInput,
     NotebookInput,
     WorkUpdate,
@@ -125,6 +121,9 @@ async def lifespan(app):
 
         bootstrap_admins(db)
         backfill_metadata(db)
+        from .progression import ensure_progression
+
+        ensure_progression(db)
         if os.getenv("ARENA_IMPORT_PRACTICE", "true").lower() not in ("0", "false"):
             from .practice_competitions import import_practice_competitions
 
@@ -210,6 +209,22 @@ app.include_router(site_router)
 from .artifacts import router as artifacts_router, delete_artifacts
 
 app.include_router(artifacts_router)
+from .forums import router as forums_router
+from .votes import router as votes_router
+from .notifications import router as notifications_router
+from .follows import router as follows_router
+from .search import router as search_router
+from .progression import router as progression_router
+
+for community_router in (
+    forums_router,
+    votes_router,
+    notifications_router,
+    follows_router,
+    search_router,
+    progression_router,
+):
+    app.include_router(community_router)
 
 
 @app.middleware("http")
@@ -438,6 +453,7 @@ def datasets(
     response: Response,
     q: str = "",
     before: int = 2147483647,
+    sort: Literal["newest", "votes"] = "newest",
     pagination: Page = Depends(page),
     user=Depends(optional_user),
     db: DBSession = Depends(get_db),
@@ -451,10 +467,21 @@ def datasets(
         ),
     )
     set_total(response, count(db, query))
-    return [
-        public(row, db)
-        for row in db.scalars(window(query.order_by(Dataset.id.desc()), pagination))
-    ]
+    return with_votes(db, "dataset", Dataset, query, sort, pagination, user)
+
+
+def with_votes(db, kind, model, query, sort, pagination, user):
+    """A catalog page in newest or most-voted order, with vote counts and state."""
+    from .votes import vote_count, vote_states
+
+    order = (
+        [vote_count(kind, model.id).desc(), model.id.desc()]
+        if sort == "votes"
+        else [model.id.desc()]
+    )
+    rows = list(db.scalars(window(query.order_by(*order), pagination)))
+    states = vote_states(db, kind, [row.id for row in rows], user)
+    return [{**public(row, db), **states[row.id]} for row in rows]
 
 
 @app.post("/api/datasets", status_code=201)
@@ -522,6 +549,8 @@ async def upload_dataset(
 def dataset_detail(
     id: int, user=Depends(optional_user), db: DBSession = Depends(get_db)
 ):
+    from .votes import summary
+
     obj = readable_dataset(db, id, user)
     with (DATA_DIR / "uploads" / obj.storage_key).open(
         encoding="utf-8-sig", newline=""
@@ -532,7 +561,7 @@ def dataset_detail(
             preview.append(row)
             if len(preview) == 10:
                 break
-    return {**public(obj, db), "preview": preview}
+    return {**public(obj, db), "preview": preview, **summary(db, "dataset", id, user)}
 
 
 @app.get("/api/datasets/{id}/download")
@@ -760,7 +789,9 @@ def competition_leaderboard(
     obj = require(db, Competition, id)
     if board == "public":
         set_total(response, leaderboard_size(db, obj))
-        return leaderboard(db, obj, pagination.offset, pagination.limit)
+        return with_tiers(
+            db, leaderboard(db, obj, pagination.offset, pagination.limit), user
+        )
     from .competition_policy import reveal_private
     from .competition_results import board_rows, finalize_if_due
 
@@ -771,7 +802,29 @@ def competition_leaderboard(
         )
     rows = board_rows(db, obj, "private")
     set_total(response, len(rows))
-    return pagination.slice(rows)
+    return with_tiers(db, pagination.slice(rows), user)
+
+
+def with_tiers(db, rows, viewer):
+    """Add the overall tier of solo participants (team rows show a team name)."""
+    from .progression import tier_name, tiers_for
+
+    names = [row["username"] for row in rows if row.get("team_id") is None]
+    ids = dict(
+        db.execute(select(User.username, User.id).where(User.username.in_(names))).all()
+    )
+    tiers = tiers_for(db, ids.values(), viewer)
+    return [
+        {
+            **row,
+            "tier": (
+                tier_name(tiers, ids.get(row["username"]))
+                if row.get("team_id") is None
+                else None
+            ),
+        }
+        for row in rows
+    ]
 
 
 class JoinInput(BaseModel):
@@ -923,6 +976,9 @@ async def submit(
 
     team_id = attach_team(db, submission)
     store_predictions(db, submission, content)
+    from .progression import mark_dirty
+
+    mark_dirty(db, user.id)
     db.commit()
     return submission_json(submission, False, team_id)
 
@@ -1088,74 +1144,31 @@ def complete(
     return {"completed": True}
 
 
-@app.get("/api/discussions")
-def discussions(
-    response: Response,
-    q: str = "",
-    pagination: Page = Depends(page),
-    db: DBSession = Depends(get_db),
-):
-    return listing(db, Discussion, q, pagination, response)
-
-
-@app.post("/api/discussions", status_code=201)
-def create_discussion(
-    data: DiscussionInput,
-    user: User = Depends(current_user),
-    db: DBSession = Depends(get_db),
-):
-    obj = Discussion(owner_id=user.id, **data.model_dump())
-    db.add(obj)
-    db.commit()
-    return public(obj, db)
-
-
-@app.get("/api/discussions/{id}/comments")
-def comments(id: int, db: DBSession = Depends(get_db)):
-    require(db, Discussion, id)
-    return [
-        public(row, db)
-        for row in db.scalars(
-            select(Comment)
-            .where(Comment.discussion_id == id)
-            .order_by(Comment.id)
-            .limit(100)
-        )
-    ]
-
-
-@app.post("/api/discussions/{id}/comments", status_code=201)
-def add_comment(
-    id: int,
-    data: CommentInput,
-    user: User = Depends(current_user),
-    db: DBSession = Depends(get_db),
-):
-    require(db, Discussion, id)
-    obj = Comment(discussion_id=id, owner_id=user.id, body=data.body)
-    db.add(obj)
-    db.commit()
-    return public(obj, db)
-
-
 @app.get("/api/models")
 def models(
     response: Response,
     q: str = "",
+    sort: Literal["newest", "votes"] = "newest",
     pagination: Page = Depends(page),
     user=Depends(optional_user),
     db: DBSession = Depends(get_db),
 ):
-    return listing(db, ModelCard, q, pagination, response, not_hidden(ModelCard, user))
+    query = select(ModelCard).where(not_hidden(ModelCard, user))
+    if q:
+        query = query.where(ModelCard.title.ilike(f"%{q[:100]}%"))
+    set_total(response, count(db, query))
+    return with_votes(db, "model", ModelCard, query, sort, pagination, user)
 
 
 @app.get("/api/models/{id}")
 def model_detail(id: int, user=Depends(optional_user), db: DBSession = Depends(get_db)):
     from .artifacts import resource
     from .models import ArtifactVersion
+    from .votes import summary
 
     return {
         **public(resource(db, "models", id, user), db),
+        **summary(db, "model", id, user),
         "input_available": bool(
             db.scalar(
                 select(ArtifactVersion.id)
@@ -1308,6 +1321,23 @@ async def remove_work(kind, id, user, db, moderated=False):
     async with user_lock(cleanup_owner):
         row = owned_work(kind, id, user, db)
         db.refresh(row, with_for_update=True)
+        from .progression import mark_dirty, mark_related
+        from .votes import remove_votes
+
+        if kind in ("datasets", "notebooks", "models"):
+            mark_related(db, AUDIT_KINDS[kind], id)
+            remove_votes(db, AUDIT_KINDS[kind], [id])
+        if kind in ("datasets", "models"):
+            topics = list(
+                db.scalars(
+                    select(CompetitionPost.id).where(
+                        CompetitionPost.scope == AUDIT_KINDS[kind],
+                        CompetitionPost.scope_id == id,
+                    )
+                )
+            )
+            remove_engagement(db, "competition-post", topics)
+            db.execute(delete(CompetitionPost).where(CompetitionPost.id.in_(topics)))
         if kind in ("competitions", "benchmarks"):
             record(
                 db,
@@ -1488,6 +1518,17 @@ async def remove_work(kind, id, user, db, moderated=False):
                     SubmissionPrediction.submission_id.in_(competition_submissions)
                 )
             )
+            mark_dirty(
+                db,
+                *db.scalars(
+                    select(CompetitionResult.user_id).where(
+                        CompetitionResult.competition_id == id
+                    )
+                ),
+                *db.scalars(
+                    select(Submission.user_id).where(Submission.competition_id == id)
+                ),
+            )
             for model in (CompetitionDisqualification, CompetitionResult):
                 db.execute(delete(model).where(model.competition_id == id))
             db.execute(
@@ -1559,6 +1600,10 @@ async def remove_work(kind, id, user, db, moderated=False):
                 .where(NotebookWorkingCopy.competition_id == id)
                 .values(competition_id=None)
             )
+            for topic in db.scalars(
+                select(CompetitionPost.id).where(CompetitionPost.competition_id == id)
+            ).all():
+                mark_related(db, "competition-post", topic)
             remove_engagement(
                 db,
                 "competition-post",

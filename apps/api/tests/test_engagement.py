@@ -81,12 +81,13 @@ def test_replies_and_reactions_are_persistent_scoped_and_owned(member, kind):
     assert member.put(path + "/reactions/unknown").status_code == 422
 
 
-def test_deleting_comment_cleans_nested_replies(member):
+def test_author_deletion_keeps_placeholder_and_admin_deletion_cleans_replies(member):
     from app.db import get_db
     from app.main import app
     from contextlib import contextmanager
-    from app.models import ContentReply, ContentReaction
+    from app.models import ContentReply, ContentReaction, ContentRevision
     from sqlalchemy import select
+    from test_operations import account
 
     post = member.post(
         "/api/competitions/1/discussion",
@@ -97,20 +98,41 @@ def test_deleting_comment_cleans_nested_replies(member):
     ).json()
     base = f"/api/engagement/competition-comment/{comment['id']}"
     child = member.post(base + "/replies", json={"body": "Child"}).json()
+    other = member.post(base + "/replies", json={"body": "Second child"}).json()
     member.put(base + "/reactions/like")
     assert (
         member.get(f"/api/engagement/competition-comment/{child['id']}").status_code
         == 404
     )
+    # The author's deletion keeps a placeholder because the comment has a reply.
     assert (
         member.delete(
             f"/api/engagement/competition-post/{post['id']}/replies/{comment['id']}"
         ).status_code
         == 204
     )
+    listed = member.get(f"/api/competition-discussions/{post['id']}/comments").json()
+    assert listed["items"][0]["deleted"] and listed["items"][0]["body"] == ""
+    assert member.get(base).json()["replies"][0]["body"] == "Child"
+    assert member.post(base + "/replies", json={"body": "Late"}).status_code == 409
+    with contextmanager(app.dependency_overrides[get_db])() as db:
+        revision = db.scalar(
+            select(ContentRevision).where(ContentRevision.target_id == comment["id"])
+        )
+        assert revision.body == "Parent"
+    # Deleting a reply without replies removes it outright.
+    child_path = (
+        f"/api/engagement/competition-comment/{comment['id']}/replies/{child['id']}"
+    )
+    assert member.delete(child_path).status_code == 204
+    admin = account("chief", role="admin")
+    assert (
+        admin.delete(f"/api/admin/moderation/reply/{comment['id']}").status_code == 204
+    )
     assert member.get(base).status_code == 404
     with contextmanager(app.dependency_overrides[get_db])() as db:
         assert db.get(ContentReply, child["id"]) is None
+        assert db.get(ContentReply, other["id"]) is None
         assert (
             db.scalar(
                 select(ContentReaction).where(

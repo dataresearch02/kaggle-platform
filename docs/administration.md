@@ -8,7 +8,7 @@ Arena has three roles, two account states, a small set of site settings, communi
 | --- | --- |
 | `user` (default) | Everything a signed-in member could do before: publish datasets, code, models and discussions, join competitions, report content. |
 | `host` | Also create competitions and CSV benchmarks while `competition_creation` is `hosts`. |
-| `admin` | Everything, plus the administration area. Admins can edit, delete and moderate anyone's datasets, notebooks/code, models, competitions, discussion topics, comments and replies, and pin topics in any competition. Private notebooks and datasets stay private; admins see hidden public content. |
+| `admin` | Everything, plus the administration area. Admins can edit, delete and moderate anyone's datasets, notebooks/code, models, competitions, discussion topics, comments and replies, pin and lock topics in any scope, manage forums and recalculate progression. Private notebooks and datasets stay private; admins see hidden public content. |
 
 `status` is `active` or `suspended`. A suspended account keeps its content, but sign-in, cookie sessions and API tokens are rejected with `This account is suspended. Contact an administrator for help.` Suspended browsers see public pages as an anonymous visitor. Reactivating the account makes existing sessions and tokens work again; use **Revoke sessions** or **Reset password** to invalidate them.
 
@@ -42,6 +42,7 @@ Administrators get **Administration** in the account menu, which opens `#admin` 
 - **Users:** search by username, filter by role and status, change roles, suspend or activate, **Reset password** (generates a strong 24-character temporary password shown once, and revokes all of the user's sessions and API tokens) and **Revoke sessions** (sessions only).
 - **Reports:** open, resolved or all reports, with the reporter, reason, the reported item's owner and a link to open it. Hide, unhide or delete the item, and resolve the report with an optional note.
 - **Hidden content:** everything currently hidden, with unhide and delete.
+- **Community:** create, rename, describe, reorder and archive forums, and **Recalculate progression** to rebuild every user's medals and tiers from source data ([community](community.md)).
 - **Audit log:** newest first, filterable by actor (a username or `system`) and by action prefix such as `user.` or `content.hide`.
 - **Settings:** the site settings below, with an announcement preview.
 
@@ -66,8 +67,8 @@ Any signed-in member can report an item they can see (not their own) with `POST 
 
 | Kind | Item | `id` |
 | --- | --- | --- |
-| `competition-post` | Competition discussion topic | topic id |
-| `reply` | Comment on a topic, or reply to a notebook comment | reply id |
+| `competition-post` | Discussion topic (competition, forum, dataset or model) | topic id |
+| `reply` | Comment on a topic, reply to a comment, or reply to a notebook comment | reply id |
 | `code` | Notebook/code | notebook id |
 | `notebook-comment` | Comment on a notebook | comment id |
 | `dataset` | Dataset | dataset id |
@@ -78,7 +79,9 @@ The UI shows **Report** on discussion topics and comments, replies, code pages, 
 
 **Hiding** (`PUT /api/admin/moderation/{kind}/{id} {hidden, reason}`; a reason is required to hide) sets the migrated `hidden` and `hidden_reason` columns. Hidden items are filtered on the server from every list, detail, download, search, input picker and discussion feed for everyone except the owner and administrators. The owner sees a "Hidden by a moderator" notice with the reason. A hidden profile returns 404 to other visitors.
 
-**Deleting** (`DELETE /api/admin/moderation/{kind}/{id}`) removes the item permanently and resolves its open reports. Datasets, code and models are removed through the same path as **Your work** deletion, including files and dependent records; cleanup jobs run in the owner's workspace. Topics and comments are deleted with their replies and reactions. Deleting a profile clears its details and photo but keeps the account.
+Hiding also removes the item from search, activity feeds, rankings, medal counts and notification links, and a hidden topic's comments stop counting toward discussion medals.
+
+**Deleting** (`DELETE /api/admin/moderation/{kind}/{id}`) removes the item permanently and resolves its open reports. Resolving a report, directly or by deleting the item, notifies the reporter in-app. Datasets, code and models are removed through the same path as **Your work** deletion, including files and dependent records; cleanup jobs run in the owner's workspace. Topics and comments are deleted with their replies and reactions. Deleting a profile clears its details and photo but keeps the account.
 
 ## Audit log
 
@@ -92,15 +95,18 @@ The UI shows **Report** on discussion topics and comments, replies, code pages, 
 | `user.password_reset`, `user.sessions_revoked` | Admin credential actions, with revoked counts |
 | `settings.update` | Changed settings with old and new values |
 | `content.hide`, `content.unhide`, `content.delete` | Moderation, including admin deletion of another user's work |
-| `content.update` | An admin edits another user's work title or description |
+| `content.update` | An admin edits another user's work title or description, or another user's topic, comment or reply |
 | `report.resolve` | A report is resolved, with the note |
+| `forum.create`, `forum.update`, `forum.reorder` | Forum management (title changes, description, archive state, order) |
+| `topic.lock`, `topic.unlock` | An administrator locks or unlocks a topic |
+| `progression.recalculate` | The progression cache is rebuilt, with the number of users |
 | `competition.create`, `competition.delete` | Any competition or CSV benchmark creation or deletion |
 | `competition.settings`, `competition.rules`, `competition.solution`, `competition.rescore` | Host changes to the timeline, limits, metric, rules, answers, and rescoring ([competitions](competitions.md)) |
 | `competition.disqualify`, `competition.reinstate`, `competition.finalize` | Disqualifying or reinstating a user or team, and storing final ranks and medals (the system is the actor for automatic finalization) |
 
 ## Pagination
 
-Catalog lists keep their JSON array responses and accept `offset` and `limit` (at most 100; larger values are capped). The total number of matches is returned in the `X-Total-Count` header. This applies to competitions, CSV benchmarks, datasets, models, notebooks, courses, legacy discussions, competition discussion topics, `/api/competitions/{id}/leaderboard` and submission history. `GET /api/code` keeps its cursor response and adds `X-Total-Count`; `GET /api/competition-discussions` keeps its object response and accepts `limit`. Admin lists use the same parameters and header.
+Catalog lists keep their JSON array responses and accept `offset` and `limit` (at most 100; larger values are capped). The total number of matches is returned in the `X-Total-Count` header. This applies to competitions, CSV benchmarks, datasets, models, notebooks, courses, the legacy discussions alias, competition discussion topics, `/api/competitions/{id}/leaderboard`, submission history, notifications, search, activity feeds, follower lists and rankings. `GET /api/code` keeps its cursor response and adds `X-Total-Count` (with `sort=votes` it pages by `offset` and returns `next_offset`); `GET /api/competition-discussions` keeps its object response and accepts `limit`. Admin lists use the same parameters and header.
 
 ## Schema migrations
 
@@ -112,8 +118,12 @@ Catalog lists keep their JSON array responses and accept `offset` and `limit` (a
 | `0002_moderation_hidden` | `hidden` and `hidden_reason` on `datasets`, `notebooks`, `model_cards`, `competition_posts`, `content_replies`, `notebook_comments` and `user_profiles` |
 | `0003_competition_solution_usage` | `competitions.solution_usage`: private per-id answer usage (`Public`/`Private`) kept for future public/private leaderboards |
 | `0004_session_auth_method` | `sessions.auth_method` (default `password`; `oidc` for Keycloak sessions, used for single sign-out) |
+| `0005_competition_rules_acceptance` … `0007_submission_private_scores` | Competition rules, timeline, limits and private scores ([competitions](competitions.md)) |
+| `0008_community_columns` | Nullable `competition_posts.competition_id` (SQLite rebuilds the table) with `scope`/`scope_id`, `edited_at`/`deleted_at` on topics, replies and notebook comments, `competition_topic_settings.locked` |
+| `0009_legacy_discussions_to_forum` | Default forums; legacy discussions and comments copied into General |
+| `0010_community_backfill` | Topic likes copied into votes; topic authors watch their topics |
 
-New tables (`schema_migrations`, `site_settings`, `content_reports`, `audit_log`, `user_identities`, `oidc_login_attempts`) are created by `create_all`. To add a column, append a new migration to `MIGRATIONS`; never edit or reorder applied ones. Run a single API process while migrations apply.
+New tables (`schema_migrations`, `site_settings`, `content_reports`, `audit_log`, `user_identities`, `oidc_login_attempts`, and the community tables listed in [community](community.md)) are created by `create_all`. Migrations that change data are idempotent, like the column migrations. To add a column, append a new migration to `MIGRATIONS`; never edit or reorder applied ones. Run a single API process while migrations apply.
 
 ## Offline practice competitions
 

@@ -2,6 +2,10 @@ import ResourcePage from './ResourcePage';
 import BenchmarkHub from './BenchmarkHub';
 import DiscussionsPage from './DiscussionsPage';
 import AccountMenu from './AccountMenu';
+import NotificationBell from './NotificationBell';
+import SearchPage, { searchHash, searchRouteFromHash } from './SearchPage';
+import RankingsPage, { rankingsRouteFromHash } from './RankingsPage';
+import ActivityFeed from './ActivityFeed';
 import AccountPage, { accountRouteFromHash } from './AccountPage';
 import Sidebar from './Sidebar';
 import Engagement from './Engagement';
@@ -13,6 +17,7 @@ import ArtifactFiles from './ArtifactFiles';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   ArrowRight,
+  ArrowUp,
   BookOpen,
   Check,
   ChevronRight,
@@ -85,7 +90,9 @@ const intros: Record<Page, [string, string]> = {
     'Better questions. Shared discoveries.',
     'Ask for help, compare approaches, and learn together.',
   ],
+  rankings: ['Rankings', 'Medals and tiers earned across competitions, datasets, notebooks and discussions.'],
 };
+const DISCUSSION_ROUTE = /^#discussions\/(forums\/)?\d+$/;
 
 function Modal({
   title,
@@ -171,6 +178,10 @@ export default function App() {
   const [resourceRoute, setResourceRoute] = useState(resourceRouteFromHash);
   const [accountRoute, setAccountRoute] = useState(accountRouteFromHash);
   const [adminRoute, setAdminRoute] = useState(adminRouteFromHash);
+  const [searchRoute, setSearchRoute] = useState(searchRouteFromHash);
+  const [rankingsRoute, setRankingsRoute] = useState(rankingsRouteFromHash);
+  const [headerQuery, setHeaderQuery] = useState(() => searchRouteFromHash()?.q || '');
+  const [catalogSort, setCatalogSort] = useState('newest');
   const [site, setSite] = useState<Site>({
     registration_open: true,
     local_login_enabled: true,
@@ -190,9 +201,10 @@ export default function App() {
     const p =
       resourceRouteFromHash()?.kind ||
       (workRouteFromHash() ? 'work' : null) ||
+      (rankingsRouteFromHash() ? 'rankings' : null) ||
       (location.hash.startsWith('#benchmarks/')
         ? 'benchmarks'
-        : /^#discussions\/\d+$/.test(location.hash)
+        : DISCUSSION_ROUTE.test(location.hash)
           ? 'discussions'
           : location.hash.slice(1));
     return codeRouteFromHash()
@@ -294,6 +306,21 @@ export default function App() {
     const handler = () => {
       if (openLogin()) return;
       setResourceRoute(resourceRouteFromHash());
+      const search = searchRouteFromHash();
+      setSearchRoute(search);
+      if (search) {
+        setHeaderQuery(search.q);
+        setAdminRoute(null);
+        setAccountRoute(null);
+        setCodeRoute(null);
+        setCompetitionRoute(null);
+        setSelected(null);
+        setCreating(false);
+        setMobile(false);
+        return;
+      }
+      const rankings = rankingsRouteFromHash();
+      setRankingsRoute(rankings);
       const admin = adminRouteFromHash();
       setAdminRoute(admin);
       if (admin) {
@@ -339,9 +366,10 @@ export default function App() {
       const p =
         resourceRouteFromHash()?.kind ||
         (workRouteFromHash() ? 'work' : null) ||
+        (rankings ? 'rankings' : null) ||
         (location.hash.startsWith('#benchmarks/')
           ? 'benchmarks'
-          : /^#discussions\/\d+$/.test(location.hash)
+          : DISCUSSION_ROUTE.test(location.hash)
             ? 'discussions'
             : location.hash.slice(1));
       if (nav.some((n) => n.id === p)) {
@@ -353,6 +381,7 @@ export default function App() {
         setCompetitionStatus('all');
         setCompetitionCategory('');
         setCompetitionSort('newest');
+        setCatalogSort('newest');
       }
     };
     window.addEventListener('hashchange', handler);
@@ -364,6 +393,8 @@ export default function App() {
       page === 'notebooks' ||
       page === 'discussions' ||
       page === 'benchmarks' ||
+      page === 'rankings' ||
+      searchRoute ||
       resourceRoute ||
       competitionRoute ||
       codeRoute
@@ -415,6 +446,8 @@ export default function App() {
     competitionStatus,
     competitionCategory,
     competitionSort,
+    catalogSort,
+    searchRoute,
   ]);
   useEffect(() => {
     if (notice) {
@@ -435,6 +468,7 @@ export default function App() {
       parameters.set('category', competitionCategory);
       parameters.set('sort', competitionSort);
     }
+    if (page === 'datasets' || page === 'models') parameters.set('sort', catalogSort);
     return `/${target}?${parameters}`;
   }
   async function loadMore() {
@@ -480,6 +514,9 @@ export default function App() {
     setResourceRoute(null);
     setAccountRoute(null);
     setAdminRoute(null);
+    setSearchRoute(null);
+    setRankingsRoute(next === 'rankings' ? 'competitions' : null);
+    setCatalogSort('newest');
     setCodeRoute(null);
     setCompetitionRoute(null);
     setCompetitionStatus('all');
@@ -557,14 +594,34 @@ export default function App() {
             </span>
             <ChevronRight size={14} />
             <span>
-              {adminRoute
-                ? 'Administration'
-                : accountRoute
-                  ? 'Your account'
-                  : nav.find((n) => n.id === page)?.label}
+              {searchRoute
+                ? 'Search'
+                : adminRoute
+                  ? 'Administration'
+                  : accountRoute
+                    ? 'Your account'
+                    : nav.find((n) => n.id === page)?.label}
             </span>
           </div>
+          <form
+            className="header-search"
+            role="search"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (headerQuery.trim()) location.hash = searchHash(headerQuery.trim());
+            }}
+          >
+            <Search size={16} aria-hidden="true" />
+            <input
+              aria-label="Search Arena"
+              placeholder="Search Arena"
+              maxLength={100}
+              value={headerQuery}
+              onChange={(event) => setHeaderQuery(event.target.value)}
+            />
+          </form>
           <div className="account">
+            {user && <NotificationBell user={user} />}
             {user ? (
               <AccountMenu
                 user={user}
@@ -624,7 +681,11 @@ export default function App() {
           </div>
         )}
         <main>
-          {adminRoute ? (
+          {searchRoute ? (
+            <SearchPage q={searchRoute.q} type={searchRoute.type} user={user} />
+          ) : rankingsRoute && !adminRoute && !accountRoute ? (
+            <RankingsPage category={rankingsRoute} />
+          ) : adminRoute ? (
             <AdminPage
               tab={adminRoute}
               user={user}
@@ -805,6 +866,20 @@ export default function App() {
                       );
                     })}
                   </div>
+                  {user && (
+                    <section className="home-feed" aria-label="Your feed">
+                      <SectionTitle
+                        title="Your feed"
+                        subtitle="Public activity from people you follow, and your own."
+                        action="Rankings"
+                        click={() => go('rankings')}
+                      />
+                      <ActivityFeed
+                        path="/feed"
+                        empty="Nothing here yet. Follow people from their profiles to see their notebooks, datasets, models, topics and medals."
+                      />
+                    </section>
+                  )}
                   <SectionTitle
                     title="Find your next challenge"
                     subtitle="A little competition goes a long way."
@@ -870,6 +945,16 @@ export default function App() {
                         onChange={(e) => setQuery(e.target.value)}
                       />
                     </label>
+                    {(page === 'datasets' || page === 'models') && (
+                      <select
+                        aria-label={`Sort ${page}`}
+                        value={catalogSort}
+                        onChange={(e) => setCatalogSort(e.target.value)}
+                      >
+                        <option value="newest">Newest</option>
+                        <option value="votes">Most votes</option>
+                      </select>
+                    )}
                     <span>
                       {total} {total === 1 ? 'result' : 'results'}
                     </span>
@@ -1178,16 +1263,27 @@ function Card({
                 {item.prize}
               </>
             ) : page === 'datasets' ? (
-              item.tags
-                ?.split(',')
-                .slice(0, 2)
-                .map((t) => <i key={t}>{t}</i>)
+              <>
+                {item.tags
+                  ?.split(',')
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .map((t) => <i key={t}>{t}</i>)}
+                <i className="card-votes" title="Upvotes">
+                  <ArrowUp size={13} aria-hidden="true" /> {item.votes ?? 0}
+                </i>
+              </>
             ) : page === 'courses' ? (
               'Start learning'
             ) : page === 'notebooks' ? (
               'View notebook'
             ) : page === 'models' ? (
-              item.license
+              <>
+                {item.license}
+                <i className="card-votes" title="Upvotes">
+                  <ArrowUp size={13} aria-hidden="true" /> {item.votes ?? 0}
+                </i>
+              </>
             ) : (
               'Join the conversation'
             )}

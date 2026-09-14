@@ -8,6 +8,7 @@ import { ArrowLeft, GitFork, Bookmark, Database, FileOutput, Code2 } from 'lucid
 import { api, type User } from './api';
 import ModerationActions, { HiddenNotice } from './Moderation';
 import NotebookWorkspace, { CellOutput, text, type Document } from './NotebookWorkspace';
+import { VoteButton } from './Community';
 
 const viewTabs = ['Notebook', 'Input', 'Output', 'Logs', 'Comments'] as const;
 type ViewTab = (typeof viewTabs)[number];
@@ -28,6 +29,8 @@ type CodeDetail = {
   published_at: string | null;
   forked_from: number | null;
   bookmarked: boolean;
+  votes?: number;
+  voted?: boolean;
   competitions: { id: number; title: string }[];
 };
 export default function CodePage({
@@ -182,6 +185,17 @@ export default function CodePage({
           )}
         </div>
         <div className="button-row">
+          <VoteButton
+            kind="code"
+            id={id}
+            votes={data.votes}
+            voted={data.voted}
+            ownerId={data.owner_id}
+            user={user}
+            signIn={signIn}
+            label={data.title}
+            disabled={data.private}
+          />
           <button
             className="button secondary"
             aria-pressed={data.bookmarked}

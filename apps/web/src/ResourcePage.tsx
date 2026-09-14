@@ -7,6 +7,8 @@ import DatasetMetadata from './DatasetMetadata';
 import ArtifactFiles from './ArtifactFiles';
 import ProfilePhoto from './ProfilePhoto';
 import NewNotebook from './NewNotebook';
+import DiscussionList from './DiscussionList';
+import { VoteButton } from './Community';
 
 export default function ResourcePage({
   kind,
@@ -73,6 +75,16 @@ export default function ResourcePage({
               </div>
             </div>
             <div className="button-row">
+              <VoteButton
+                kind={kind === 'datasets' ? 'dataset' : 'model'}
+                id={id}
+                votes={item.votes}
+                voted={item.voted}
+                ownerId={item.owner_id}
+                user={user}
+                signIn={signIn}
+                label={item.title}
+              />
               <button className="button secondary" onClick={yourWork}>
                 Your Work
               </button>
@@ -161,6 +173,17 @@ export default function ResourcePage({
               )}
             </>
           )}
+          <section className="resource-discussion" aria-label="Discussion">
+            <DiscussionList
+              scope={kind === 'datasets' ? 'dataset' : 'model'}
+              scopeId={id}
+              scopeTitle={item.title}
+              heading="Discussion"
+              pageSize={10}
+              user={user}
+              signIn={signIn}
+            />
+          </section>
         </>
       )}
       {creating && (

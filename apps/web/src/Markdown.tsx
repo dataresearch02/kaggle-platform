@@ -83,11 +83,54 @@ function markdownUrlTransform(url: string, key: string) {
   return key === 'src' && /^data:image\//i.test(url.trim()) ? url : defaultUrlTransform(url);
 }
 
-export default function Markdown({ children }: { children: string }) {
+type MarkdownNode = { type: string; value?: string; url?: string; children?: MarkdownNode[] };
+// Matches the server's rule in community.py: @name outside words, links and code.
+const MENTION = /(?<![\w@./+-])@([A-Za-z0-9_]{3,40})(?![\w@])/g;
+
+/** Link @username text to profiles, only for usernames the server confirmed exist. */
+export function linkMentions(node: MarkdownNode, known: Set<string>) {
+  if (!node.children || node.type === 'link' || node.type === 'linkReference') return;
+  node.children = node.children.flatMap((child) => {
+    if (child.type !== 'text' || !child.value) {
+      linkMentions(child, known);
+      return [child];
+    }
+    const value = child.value;
+    const parts: MarkdownNode[] = [];
+    let last = 0;
+    for (const match of value.matchAll(MENTION)) {
+      const name = match[1].toLowerCase();
+      if (!known.has(name) || match.index === undefined) continue;
+      if (match.index > last) parts.push({ type: 'text', value: value.slice(last, match.index) });
+      parts.push({
+        type: 'link',
+        url: `#profile/${name}`,
+        children: [{ type: 'text', value: match[0] }],
+      });
+      last = match.index + match[0].length;
+    }
+    if (!parts.length) return [child];
+    if (last < value.length) parts.push({ type: 'text', value: value.slice(last) });
+    return parts;
+  });
+}
+
+export default function Markdown({
+  children,
+  mentions = [],
+}: {
+  children: string;
+  /** Existing usernames mentioned in the text, as returned by the API. */
+  mentions?: string[];
+}) {
+  const known = new Set(mentions.map((name) => name.toLowerCase()));
+  const mentionPlugin = () => (tree: unknown) => {
+    if (known.size) linkMentions(tree as MarkdownNode, known);
+  };
   return (
     <div className="notebook-markdown">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkGfm, remarkMath, mentionPlugin]}
         // Parse embedded HTML, sanitize it, then generate trusted math markup.
         rehypePlugins={[rehypeRaw, [rehypeSanitize, markdownSchema], rehypeKatex]}
         components={markdownComponents}

@@ -22,7 +22,7 @@ from .models import (
     UserProfile,
     now,
 )
-from .permissions import can_view
+from .community import target_row, target_url
 
 router = APIRouter(prefix="/api", tags=["Moderation"])
 
@@ -116,24 +116,7 @@ def describe_target(db, kind, id):
     if row is None:
         return unavailable
     owner = db.get(User, row.owner_id)
-    link = None
-    if kind == "dataset":
-        link = f"#datasets/{id}"
-    elif kind == "model":
-        link = f"#models/{id}"
-    elif kind == "code":
-        link = f"#code/{id}"
-    elif kind == "competition-post":
-        link = f"#competitions/{row.competition_id}/discussion/{id}"
-    elif kind == "notebook-comment":
-        link = f"#code/{row.notebook_id}"
-    elif kind == "reply":
-        parent_model = REPLY_PARENTS.get(row.target_kind)
-        parent = db.get(parent_model, row.target_id) if parent_model else None
-        if isinstance(parent, CompetitionPost):
-            link = f"#competitions/{parent.competition_id}/discussion/{parent.id}"
-        elif isinstance(parent, NotebookComment):
-            link = f"#code/{parent.notebook_id}"
+    link = target_url(db, kind, row)
     return {
         "available": True,
         "title": getattr(row, "title", None) or excerpt(row.body),
@@ -147,35 +130,27 @@ def describe_target(db, kind, id):
 
 def require_reportable(db, kind, id, user):
     """Resolve an item the user can currently see; return its owner id or 404."""
-    from .notebook_visibility import require_visible
+    row = target_row(db, kind, id, user)
+    if row is None:
+        raise HTTPException(404, "Content not found")
+    return row.id if kind == "profile" else row.owner_id
 
-    missing = HTTPException(404, "Content not found")
-    if kind == "profile":
-        from .accounts import visible_profile
 
-        target = db.get(User, id)
-        if not target:
-            raise missing
-        visible_profile(db, target.username, user)
-        return target.id
-    row = db.get(MODELS[kind], id)
-    if row is None or not can_view(row, user):
-        raise missing
-    if kind == "dataset":
-        from .dataset_access import readable
+def notify_reporter(db, report, actor):
+    from .notifications import notify
 
-        readable(db, id, user)
-    elif kind == "code":
-        require_visible(db, id, user)
-    elif kind == "notebook-comment":
-        require_visible(db, row.notebook_id, user)
-    elif kind == "reply" and row.target_kind in REPLY_PARENTS:
-        parent = db.get(REPLY_PARENTS[row.target_kind], row.target_id)
-        if parent is None or not can_view(parent, user):
-            raise missing
-        if isinstance(parent, NotebookComment):
-            require_visible(db, parent.notebook_id, user)
-    return row.owner_id
+    # The reporter learns the outcome even when the item is gone; the listing
+    # then shows no title or link.
+    notify(
+        db,
+        report.reporter_id,
+        "report",
+        actor=None if actor and actor.id == report.reporter_id else actor,
+        target_kind=report.target_kind,
+        target_id=report.target_id,
+        detail={"report_id": report.id},
+        check_visible=False,
+    )
 
 
 def resolve_open_reports(db, kind, id, actor, note):
@@ -190,6 +165,7 @@ def resolve_open_reports(db, kind, id, actor, note):
         report.resolution_note = note
         report.resolved_by = actor.id
         report.resolved_at = now()
+        notify_reporter(db, report, actor)
 
 
 async def delete_target(db, kind, id, actor):
@@ -197,6 +173,9 @@ async def delete_target(db, kind, id, actor):
     if not describe_target(db, kind, id)["available"]:
         raise HTTPException(404, "Content not found")
     resolve_open_reports(db, kind, id, actor, "Content deleted by an administrator")
+    from .progression import mark_related
+
+    mark_related(db, kind, id)
     if kind in WORK_KINDS:
         from .main import remove_work
 

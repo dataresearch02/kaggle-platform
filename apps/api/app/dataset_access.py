@@ -82,6 +82,9 @@ def change_access(
         row = DatasetAccess(dataset_id=id)
         db.add(row)
     row.visibility = data.visibility
+    from .progression import mark_related
+
+    mark_related(db, "dataset", id)
     db.commit()
     return {"visibility": row.visibility}
 

@@ -4,16 +4,24 @@ import Markdown from './Markdown';
 import DiscussionEditor from './DiscussionEditor';
 import DiscussionAvatar from './DiscussionAvatar';
 import ModerationActions, { HiddenNotice } from './Moderation';
+import { Timestamp, UserLink, VoteButton } from './Community';
+import RevisionHistory from './Revisions';
 
 type Reaction = { reaction: string; count: number; reacted: boolean };
-type Reply = {
+export type Reply = {
   id: number;
   owner_id: number;
   username: string;
   body: string;
   created_at: string;
+  edited_at?: string | null;
+  deleted?: boolean;
   hidden?: boolean;
   hidden_reason?: string;
+  votes?: number;
+  voted?: boolean;
+  owner_tier?: string | null;
+  mentions?: string[];
 };
 type Thread = { reactions: Reaction[]; replies: Reply[]; next_cursor: number | null };
 const labels: Record<string, string> = {
@@ -28,6 +36,7 @@ export default function Engagement({
   user,
   signIn,
   allowReply = true,
+  canReply = true,
   competitionId,
 }: {
   kind:
@@ -40,6 +49,8 @@ export default function Engagement({
   user: User | null;
   signIn: () => void;
   allowReply?: boolean;
+  /** False on locked topics and deleted comments: existing replies stay readable. */
+  canReply?: boolean;
   competitionId?: number;
 }) {
   const base = `/engagement/${kind}/${id}`;
@@ -48,7 +59,10 @@ export default function Engagement({
   const [busy, setBusy] = useState(false);
   const [replying, setReplying] = useState(false);
   const [body, setBody] = useState('');
+  const [editing, setEditing] = useState<number | null>(null);
+  const [draft, setDraft] = useState('');
   const [uploading, setUploading] = useState(false);
+  const discussion = kind === 'competition-post' || kind === 'competition-comment';
   useEffect(() => {
     let active = true;
     setThread(null);
@@ -74,6 +88,15 @@ export default function Engagement({
     } finally {
       setBusy(false);
     }
+  }
+  function replace(reply: Reply) {
+    setThread(
+      (value) =>
+        value && {
+          ...value,
+          replies: value.replies.map((item) => (item.id === reply.id ? reply : item)),
+        },
+    );
   }
   return (
     <div className="engagement">
@@ -105,7 +128,7 @@ export default function Engagement({
             {labels[reaction.reaction]} {reaction.count}
           </button>
         ))}
-        {allowReply && (
+        {allowReply && canReply && (
           <button
             type="button"
             disabled={busy || uploading || !thread}
@@ -119,7 +142,7 @@ export default function Engagement({
           </button>
         )}
       </div>
-      {replying && (
+      {replying && canReply && (
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -135,7 +158,7 @@ export default function Engagement({
             });
           }}
         >
-          {competitionId ? (
+          {discussion ? (
             <DiscussionEditor
               label="Write a reply"
               value={body}
@@ -178,56 +201,131 @@ export default function Engagement({
           {thread?.replies.map((reply) => (
             <article className="engagement-reply" key={reply.id}>
               <p className="discussion-author">
-                {competitionId && <DiscussionAvatar username={reply.username} />}
-                <strong>{reply.username}</strong> · {new Date(reply.created_at).toLocaleString()}
+                {discussion && <DiscussionAvatar username={reply.username} />}
+                <UserLink username={reply.username} tier={reply.owner_tier} />
+                <Timestamp created={reply.created_at} edited={reply.edited_at} />
               </p>
-              <HiddenNotice hidden={reply.hidden} reason={reply.hidden_reason} />
-              <Markdown>{reply.body}</Markdown>
-              <ModerationActions
-                kind="reply"
-                id={reply.id}
-                ownerId={reply.owner_id}
-                hidden={reply.hidden}
-                user={user}
-                signIn={signIn}
-                label={`reply by ${reply.username}`}
-                onChange={(change) =>
-                  setThread(
-                    (value) =>
-                      value && {
-                        ...value,
-                        replies: change.deleted
-                          ? value.replies.filter((item) => item.id !== reply.id)
-                          : value.replies.map((item) =>
-                              item.id === reply.id
-                                ? { ...item, hidden: change.hidden, hidden_reason: change.reason }
-                                : item,
-                            ),
-                      },
-                  )
-                }
-              />
-              {user?.id === reply.owner_id && (
-                <button
-                  type="button"
-                  className="text-button"
-                  disabled={busy}
-                  onClick={() =>
+              {reply.deleted ? (
+                <p className="deleted-placeholder">This reply was deleted by its author.</p>
+              ) : editing === reply.id ? (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!draft.trim()) return;
                     void act(async () => {
-                      await api(`${base}/replies/${reply.id}`, { method: 'DELETE' });
-                      setThread(
-                        (value) =>
-                          value && {
-                            ...value,
-                            replies: value.replies.filter((item) => item.id !== reply.id),
-                          },
+                      replace(
+                        await api<Reply>(`${base}/replies/${reply.id}`, {
+                          method: 'PUT',
+                          body: JSON.stringify({ body: draft }),
+                        }),
                       );
-                    })
-                  }
+                      setEditing(null);
+                    });
+                  }}
                 >
-                  Delete reply
-                </button>
+                  <label>
+                    Edit reply
+                    <textarea
+                      rows={4}
+                      maxLength={10000}
+                      value={draft}
+                      onChange={(event) => setDraft(event.target.value)}
+                    />
+                  </label>
+                  <div className="button-row">
+                    <button className="button small" disabled={busy || !draft.trim()}>
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button"
+                      disabled={busy}
+                      onClick={() => setEditing(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  <HiddenNotice hidden={reply.hidden} reason={reply.hidden_reason} />
+                  <Markdown mentions={reply.mentions}>{reply.body}</Markdown>
+                </>
               )}
+              <div className="comment-actions">
+                <VoteButton
+                  kind="reply"
+                  id={reply.id}
+                  votes={reply.votes}
+                  voted={reply.voted}
+                  ownerId={reply.owner_id}
+                  user={user}
+                  signIn={signIn}
+                  label={`reply by ${reply.username}`}
+                  disabled={reply.deleted}
+                />
+                <ModerationActions
+                  kind="reply"
+                  id={reply.id}
+                  ownerId={reply.owner_id}
+                  hidden={reply.hidden}
+                  user={user}
+                  signIn={signIn}
+                  label={`reply by ${reply.username}`}
+                  onChange={(change) =>
+                    setThread(
+                      (value) =>
+                        value && {
+                          ...value,
+                          replies: change.deleted
+                            ? value.replies.filter((item) => item.id !== reply.id)
+                            : value.replies.map((item) =>
+                                item.id === reply.id
+                                  ? { ...item, hidden: change.hidden, hidden_reason: change.reason }
+                                  : item,
+                              ),
+                        },
+                    )
+                  }
+                />
+                {user?.id === reply.owner_id && !reply.deleted && (
+                  <>
+                    <button
+                      type="button"
+                      className="text-button"
+                      disabled={busy}
+                      onClick={() => {
+                        setDraft(reply.body);
+                        setEditing(reply.id);
+                      }}
+                    >
+                      Edit reply
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button"
+                      disabled={busy}
+                      onClick={() =>
+                        void act(async () => {
+                          await api(`${base}/replies/${reply.id}`, { method: 'DELETE' });
+                          setThread(
+                            (value) =>
+                              value && {
+                                ...value,
+                                replies: value.replies.filter((item) => item.id !== reply.id),
+                              },
+                          );
+                        })
+                      }
+                    >
+                      Delete reply
+                    </button>
+                  </>
+                )}
+                {(reply.edited_at || reply.deleted) && (
+                  <RevisionHistory kind="reply" id={reply.id} user={user} />
+                )}
+              </div>
             </article>
           ))}
           {thread?.next_cursor != null && (

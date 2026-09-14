@@ -1,7 +1,16 @@
 import json
 from sqlalchemy import select
 from .db import DATA_DIR
-from .models import User, Dataset, Competition, Notebook, Course, Discussion, ModelCard
+from .models import (
+    User,
+    Dataset,
+    Competition,
+    Notebook,
+    Course,
+    CompetitionPost,
+    Forum,
+    ModelCard,
+)
 from .auth import hash_password
 import secrets
 
@@ -10,6 +19,10 @@ SEED_TEST_CSV = "id,temperature,working_day\n7,20,1\n8,10,1\n9,23,0\n"
 
 
 def seed(db):
+    from .migrations import ensure_default_forums
+
+    ensure_default_forums(db.connection())
+    db.commit()
     if db.scalar(select(User).where(User.username == "arena")):
         return
     user = User(
@@ -144,8 +157,12 @@ def seed(db):
                 lessons=json.dumps(lessons),
             )
         )
+    general = db.scalar(select(Forum).where(Forum.slug == "general"))
     db.add(
-        Discussion(
+        CompetitionPost(
+            competition_id=None,
+            scope="forum",
+            scope_id=general.id if general else None,
             owner_id=user.id,
             title="Welcome to the learning lab",
             body="What are you building this week? Share your first experiment, ask a question, or help someone get unstuck. All starter datasets here are small synthetic examples.",

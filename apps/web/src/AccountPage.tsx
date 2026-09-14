@@ -1,6 +1,21 @@
 import { useEffect, useState } from 'react';
-import { api, oidcLoginPath, ssoErrorMessage, type User, type CompetitionResult } from './api';
+import {
+  api,
+  apiPage,
+  oidcLoginPath,
+  ssoErrorMessage,
+  type User,
+  type CompetitionResult,
+} from './api';
 import { Avatar, type Profile } from './AccountMenu';
+import ActivityFeed from './ActivityFeed';
+import {
+  MedalCounts,
+  TierBadge,
+  UserLink,
+  categoryLabels,
+  type Progression,
+} from './Community';
 import { MedalBadge } from './CompetitionRules';
 import ModerationActions, { HiddenNotice } from './Moderation';
 
@@ -21,6 +36,15 @@ type Group = {
   invite_code: string | null;
   members: User[];
 };
+type Follows = { followers: number; following: number; is_following: boolean; can_follow: boolean };
+type Person = { id: number; username: string; tier_name: string | null; followed_at: string };
+type Preference = { kind: string; label: string; enabled: boolean };
+const profileTabs = [
+  ['overview', 'Overview', ''],
+  ['activity', 'Activity', '/activity'],
+  ['followers', 'Followers', '/followers'],
+  ['following', 'Following', '/following'],
+] as const;
 type Identities = {
   label: string;
   has_password: boolean;
@@ -44,7 +68,9 @@ function linkResultFromHash() {
 export function accountRouteFromHash() {
   // Keycloak linking returns with a query such as ?linked=1.
   const path = window.location.hash.slice(1).replace(/\?[\w=&.-]*$/, '');
-  return /^(account\/(profile|groups|tokens|settings)|profile\/[a-zA-Z0-9_]+)$/.test(path)
+  return /^(account\/(profile|groups|tokens|settings)|profile\/[a-zA-Z0-9_]+(\/(activity|followers|following))?)$/.test(
+    path,
+  )
     ? path
     : null;
 }
@@ -61,8 +87,13 @@ export default function AccountPage({
 }) {
   const publicView = route.startsWith('profile/');
   const section = route.split('/')[1];
+  const profileTab = (publicView && route.split('/')[2]) || 'overview';
   const [profile, setProfile] = useState<Profile | null>(null);
   const [results, setResults] = useState<CompetitionResult[]>([]);
+  const [progression, setProgression] = useState<Progression | null>(null);
+  const [follows, setFollows] = useState<Follows | null>(null);
+  const [people, setPeople] = useState<{ items: Person[]; total: number }>({ items: [], total: 0 });
+  const [preferences, setPreferences] = useState<Preference[]>([]);
   const [tokens, setTokens] = useState<Token[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [secret, setSecret] = useState('');
@@ -94,6 +125,32 @@ export default function AccountPage({
         .catch(() => {
           if (active) setResults([]);
         });
+    if (publicView) {
+      api<Progression>(`/profiles/${section}/progression`)
+        .then((row) => {
+          if (active) setProgression(row);
+        })
+        .catch(() => {});
+      api<Follows>(`/profiles/${section}/follows`)
+        .then((row) => {
+          if (active) setFollows(row);
+        })
+        .catch(() => {});
+      if (profileTab === 'followers' || profileTab === 'following')
+        apiPage<Person>(`/profiles/${section}/${profileTab}?limit=50`)
+          .then((page) => {
+            if (active) setPeople(page);
+          })
+          .catch((e) => {
+            if (active) setError(e.message);
+          });
+    }
+    if (!publicView && section === 'settings')
+      api<{ preferences: Preference[] }>('/account/notification-preferences')
+        .then((row) => {
+          if (active) setPreferences(row.preferences);
+        })
+        .catch(() => {});
     const request = publicView
       ? api<Profile>(`/profiles/${section}`).then((row) => {
           if (active) setProfile(row);
@@ -194,10 +251,46 @@ export default function AccountPage({
           {publicView && profile && (
             <article className="account-card public-profile">
               <Avatar profile={profile} />
-              <h2>{profile.display_name || profile.username}</h2>
+              <h2>
+                {profile.display_name || profile.username}{' '}
+                {progression && <TierBadge tier={progression.tier_name} compact={false} />}
+              </h2>
               <p>
                 @{profile.username} · Joined {new Date(profile.joined_at).toLocaleDateString()}
               </p>
+              {follows && (
+                <p className="follow-summary">
+                  <a href={`#profile/${profile.username}/followers`}>
+                    {follows.followers} {follows.followers === 1 ? 'follower' : 'followers'}
+                  </a>{' '}
+                  · <a href={`#profile/${profile.username}/following`}>{follows.following} following</a>
+                  {(follows.can_follow || !user) && (
+                    <button
+                      className={`button small${follows.is_following ? ' secondary' : ''}`}
+                      disabled={busy}
+                      onClick={() => {
+                        if (!user) {
+                          signIn();
+                          return;
+                        }
+                        void run(
+                          async () =>
+                            setFollows(
+                              await api<Follows>(`/profiles/${profile.username}/follow`, {
+                                method: follows.is_following ? 'DELETE' : 'PUT',
+                              }),
+                            ),
+                          follows.is_following
+                            ? `You unfollowed ${profile.username}`
+                            : `You follow ${profile.username}`,
+                        );
+                      }}
+                    >
+                      {follows.is_following ? 'Unfollow' : 'Follow'}
+                    </button>
+                  )}
+                </p>
+              )}
               <p>{profile.tagline}</p>
               <p>
                 {[profile.occupation, profile.organization, profile.location, profile.pronouns]
@@ -248,6 +341,82 @@ export default function AccountPage({
             </article>
           )}
           {publicView && profile && (
+            <nav className="competition-tabs profile-tabs" aria-label="Profile sections">
+              {profileTabs.map(([name, label, suffix]) => (
+                <a
+                  key={name}
+                  href={`#profile/${profile.username}${suffix}`}
+                  aria-current={profileTab === name ? 'page' : undefined}
+                >
+                  {label}
+                </a>
+              ))}
+            </nav>
+          )}
+          {publicView && profile && profileTab === 'overview' && progression && (
+            <section className="account-card profile-progression">
+              <h2>
+                Progression <TierBadge tier={progression.tier_name} compact={false} />
+              </h2>
+              <div className="progression-grid">
+                {progression.categories.map((row) => (
+                  <article key={row.category}>
+                    <h3>{categoryLabels[row.category]}</h3>
+                    <TierBadge tier={row.tier_name} compact={false} />
+                    <MedalCounts gold={row.gold} silver={row.silver} bronze={row.bronze} />
+                    <a href={`#rankings/${row.category}`}>View rankings</a>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+          {publicView && profile && profileTab === 'activity' && (
+            <section className="account-card">
+              <h2>Activity</h2>
+              <ActivityFeed
+                path={`/profiles/${profile.username}/activity`}
+                empty="No public activity yet."
+              />
+            </section>
+          )}
+          {publicView && profile && (profileTab === 'followers' || profileTab === 'following') && (
+            <section className="account-card people-list">
+              <h2>
+                {profileTab === 'followers' ? 'Followers' : 'Following'} <small>{people.total}</small>
+              </h2>
+              {!people.items.length && (
+                <p className="muted">
+                  {profileTab === 'followers'
+                    ? 'No visible followers yet.'
+                    : 'Not following anyone with a visible profile yet.'}
+                </p>
+              )}
+              <ul>
+                {people.items.map((person) => (
+                  <li key={person.id}>
+                    <UserLink username={person.username} tier={person.tier_name} />
+                  </li>
+                ))}
+              </ul>
+              {people.items.length < people.total && (
+                <button
+                  className="button secondary"
+                  disabled={busy}
+                  onClick={() =>
+                    void run(async () => {
+                      const page = await apiPage<Person>(
+                        `/profiles/${profile.username}/${profileTab}?offset=${people.items.length}&limit=50`,
+                      );
+                      setPeople({ items: [...people.items, ...page.items], total: page.total });
+                    }, '')
+                  }
+                >
+                  Load more
+                </button>
+              )}
+            </section>
+          )}
+          {publicView && profile && profileTab === 'overview' && (
             <section className="account-card profile-results">
               <h2>Competition results</h2>
               {results.length ? (
@@ -415,6 +584,40 @@ export default function AccountPage({
                 </label>
                 <button className="button" disabled={busy}>
                   Save settings
+                </button>
+              </form>
+              <form
+                className="account-card account-form notification-preferences"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const data = new FormData(event.currentTarget);
+                  void run(async () => {
+                    const result = await api<{ preferences: Preference[] }>(
+                      '/account/notification-preferences',
+                      {
+                        method: 'PUT',
+                        body: JSON.stringify(
+                          Object.fromEntries(preferences.map((row) => [row.kind, data.has(row.kind)])),
+                        ),
+                      },
+                    );
+                    setPreferences(result.preferences);
+                  }, 'Notification preferences saved');
+                }}
+              >
+                <h2>Notifications</h2>
+                <p>
+                  Choose which activity appears in your notification bell. Arena sends no email;
+                  service notices from administrators are always shown.
+                </p>
+                {preferences.map((row) => (
+                  <label key={row.kind} className="checkbox-label">
+                    <input type="checkbox" name={row.kind} defaultChecked={row.enabled} />{' '}
+                    {row.label}
+                  </label>
+                ))}
+                <button className="button" disabled={busy || !preferences.length}>
+                  Save notification preferences
                 </button>
               </form>
               {identities && (

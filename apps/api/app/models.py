@@ -6,6 +6,7 @@ from sqlalchemy import (
     Text,
     Float,
     ForeignKey,
+    Index,
     LargeBinary,
     UniqueConstraint,
 )
@@ -255,9 +256,13 @@ class CompetitionResource(Base):
 
 
 class CompetitionPost(Base):
+    """A discussion topic in a competition, a site forum, or a dataset/model page."""
+
     __tablename__ = "competition_posts"
+    __table_args__ = (Index("ix_competition_posts_scope", "scope", "scope_id"),)
     id = Column(Integer, primary_key=True)
-    competition_id = Column(Integer, ForeignKey("competitions.id"), nullable=False)
+    # Set only for competition topics; see scope/scope_id for the others.
+    competition_id = Column(Integer, ForeignKey("competitions.id"), nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     title = Column(String(160), nullable=False)
     body = Column(Text, nullable=False)
@@ -265,6 +270,14 @@ class CompetitionPost(Base):
     # Moderation: hidden rows are visible only to their owner and administrators.
     hidden = Column(Integer, nullable=False, default=0, server_default="0")
     hidden_reason = Column(Text, nullable=False, default="", server_default="")
+    # "competition", "forum", "dataset" or "model"; scope_id is that row's id.
+    scope = Column(
+        String(20), nullable=False, default="competition", server_default="competition"
+    )
+    scope_id = Column(Integer, nullable=True)
+    edited_at = Column(String, nullable=True)
+    # Deleted by the author while it had comments: kept as a placeholder.
+    deleted_at = Column(String, nullable=True)
 
 
 class SampleImport(Base):
@@ -361,6 +374,8 @@ class NotebookComment(Base):
     # Moderation: hidden rows are visible only to their owner and administrators.
     hidden = Column(Integer, nullable=False, default=0, server_default="0")
     hidden_reason = Column(Text, nullable=False, default="", server_default="")
+    edited_at = Column(String, nullable=True)
+    deleted_at = Column(String, nullable=True)
 
 
 class ContentReply(Base):
@@ -374,6 +389,8 @@ class ContentReply(Base):
     # Moderation: hidden rows are visible only to their owner and administrators.
     hidden = Column(Integer, nullable=False, default=0, server_default="0")
     hidden_reason = Column(Text, nullable=False, default="", server_default="")
+    edited_at = Column(String, nullable=True)
+    deleted_at = Column(String, nullable=True)
 
 
 class ContentReaction(Base):
@@ -606,6 +623,8 @@ class CompetitionTopicSettings(Base):
         primary_key=True,
     )
     pinned = Column(Integer, nullable=False, default=0)
+    # Locked topics refuse new comments and replies.
+    locked = Column(Integer, nullable=False, default=0, server_default="0")
 
 
 class CompetitionTopicBookmark(Base):
@@ -781,3 +800,114 @@ class AuditLog(Base):
     target_id = Column(String(80), nullable=False, default="")
     detail = Column(Text, nullable=False, default="{}")
     created_at = Column(String, default=now)
+
+
+class Forum(Base):
+    """An administrator-managed site forum; archived forums are read-only."""
+
+    __tablename__ = "forums"
+    id = Column(Integer, primary_key=True)
+    slug = Column(String(80), nullable=False, unique=True)
+    title = Column(String(80), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    position = Column(Integer, nullable=False, default=0)
+    archived = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=now)
+
+
+class LegacyDiscussionMap(Base):
+    """Legacy discussions/comments copied into the General forum, keyed by old id."""
+
+    __tablename__ = "legacy_discussion_map"
+    kind = Column(String(20), primary_key=True)
+    legacy_id = Column(Integer, primary_key=True)
+    new_id = Column(Integer, nullable=False)
+
+
+class ContentRevision(Base):
+    """The previous text of an edited or author-deleted topic, comment or reply."""
+
+    __tablename__ = "content_revisions"
+    __table_args__ = (Index("ix_content_revisions_target", "target_kind", "target_id"),)
+    id = Column(Integer, primary_key=True)
+    target_kind = Column(String(32), nullable=False)
+    target_id = Column(Integer, nullable=False)
+    editor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    title = Column(String(160), nullable=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(String, default=now)
+
+
+class Vote(Base):
+    """One upvote per user on a notebook, dataset, model, topic, comment or reply."""
+
+    __tablename__ = "votes"
+    __table_args__ = (
+        UniqueConstraint("target_kind", "target_id", "user_id"),
+        Index("ix_votes_target", "target_kind", "target_id"),
+    )
+    id = Column(Integer, primary_key=True)
+    target_kind = Column(String(32), nullable=False)
+    target_id = Column(Integer, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    created_at = Column(String, default=now)
+
+
+class TopicWatch(Base):
+    __tablename__ = "topic_watches"
+    post_id = Column(
+        Integer,
+        ForeignKey("competition_posts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    __table_args__ = (Index("ix_notifications_recipient", "recipient_id", "read_at"),)
+    id = Column(Integer, primary_key=True)
+    recipient_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    kind = Column(String(20), nullable=False)
+    actor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    target_kind = Column(String(32), nullable=False, default="")
+    target_id = Column(Integer, nullable=True)
+    url = Column(String(255), nullable=False, default="")
+    # Kind-specific JSON, e.g. the rank and medal of a competition result.
+    detail = Column(Text, nullable=False, default="{}")
+    # Coalesced events (such as votes on one item per day) share a group key.
+    group_key = Column(String(120), nullable=True, index=True)
+    count = Column(Integer, nullable=False, default=1)
+    read_at = Column(String, nullable=True)
+    created_at = Column(String, default=now)
+
+
+class NotificationPreference(Base):
+    """Opt-outs per notification kind; a missing row means enabled."""
+
+    __tablename__ = "notification_preferences"
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    kind = Column(String(20), primary_key=True)
+    enabled = Column(Integer, nullable=False, default=1)
+
+
+class Follow(Base):
+    __tablename__ = "follows"
+    follower_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    followee_id = Column(Integer, ForeignKey("users.id"), primary_key=True, index=True)
+    created_at = Column(String, default=now)
+
+
+class UserProgression(Base):
+    """Recomputable medal counts and tier per user and category; see progression.py."""
+
+    __tablename__ = "user_progression"
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    category = Column(String(20), primary_key=True)
+    tier = Column(Integer, nullable=False, default=0)
+    gold = Column(Integer, nullable=False, default=0)
+    silver = Column(Integer, nullable=False, default=0)
+    bronze = Column(Integer, nullable=False, default=0)
+    # When the current medal count was reached; earlier ranks first on ties.
+    achieved_at = Column(String, nullable=True)
+    updated_at = Column(String, default=now, onupdate=now)

@@ -178,7 +178,9 @@ reinstatement after the end recompute the results.
 
 `competition_results` has one row per user: competition, rank, number of ranked
 teams, medal, score and team. Team placements and medals are stored for every
-member of the team. The table is intended for a later tiers and rankings feature.
+member of the team. Competition medals, tiers and rankings are built on this table
+([community](community.md)), and each ranked participant is notified of their
+result.
 
 Medals follow Kaggle's thresholds, where a solo participant counts as a team and
 percentages round down:

@@ -197,7 +197,9 @@ def posts(
 ):
     require_competition(db, id)
     query = select(CompetitionPost).where(
-        CompetitionPost.competition_id == id, not_hidden(CompetitionPost, user)
+        CompetitionPost.competition_id == id,
+        not_hidden(CompetitionPost, user),
+        CompetitionPost.deleted_at.is_(None),
     )
     set_total(response, count(db, query))
     return [
@@ -215,12 +217,8 @@ def add_post(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
+    from .discussion_feed import create_topic
+
     require_competition(db, id)
-    if len(data.title.strip()) < 3 or len(data.body.strip()) < 3:
-        raise HTTPException(
-            422, "Enter a title and a message of at least three characters"
-        )
-    row = CompetitionPost(competition_id=id, owner_id=user.id, **data.model_dump())
-    db.add(row)
-    db.commit()
+    row = create_topic(db, user, "competition", id, data.title, data.body)
     return {**serialize(row), "owner": user.username}

@@ -111,6 +111,9 @@ def set_visibility(
         )
         db.add(working)
     working.private = int(data.visibility == "private")
+    from .progression import mark_related
+
+    mark_related(db, "code", id)
     db.commit()
     return {"private": bool(working.private)}
 
@@ -231,5 +234,8 @@ def update_share_settings(
         settings = NotebookSettings(notebook_id=id)
         db.add(settings)
     settings.allow_comments = int(data.allow_comments)
+    from .progression import mark_related
+
+    mark_related(db, "code", id)
     db.commit()
     return share_settings(id, user, db)

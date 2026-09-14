@@ -14,7 +14,8 @@ export default function DiscussionEditor({
 }: {
   value: string;
   onChange: (value: string) => void;
-  competitionId: number;
+  /** Image uploads are stored with a competition; other scopes use text and links only. */
+  competitionId?: number;
   label: string;
   disabled?: boolean;
   limit?: number;
@@ -87,15 +88,17 @@ export default function DiscussionEditor({
               <Icon size={18} />
             </button>
           ))}
-          <button
-            type="button"
-            aria-label="Upload image"
-            title="Upload image"
-            disabled={disabled || uploading}
-            onClick={() => image.current?.click()}
-          >
-            <ImagePlus size={18} />
-          </button>
+          {competitionId !== undefined && (
+            <button
+              type="button"
+              aria-label="Upload image"
+              title="Upload image"
+              disabled={disabled || uploading}
+              onClick={() => image.current?.click()}
+            >
+              <ImagePlus size={18} />
+            </button>
+          )}
         </div>
       )}
       <input
@@ -148,7 +151,11 @@ export default function DiscussionEditor({
         />
       )}
       <div className="discussion-editor-hint">
-        {uploading ? 'Uploading image…' : 'Markdown supported · Images up to 5 MB'}
+        {uploading
+          ? 'Uploading image…'
+          : competitionId !== undefined
+            ? 'Markdown supported · @username mentions · Images up to 5 MB'
+            : 'Markdown supported · @username mentions'}
         <span>
           {value.length.toLocaleString()} / {limit.toLocaleString()}
         </span>

@@ -65,6 +65,9 @@ def list_code(
     q: str = Query(default="", max_length=160),
     cursor: Optional[int] = Query(default=None, ge=1),
     limit: int = Query(default=20, ge=1, le=50),
+    # "votes" pages by offset; "newest" keeps the id cursor.
+    sort: Literal["newest", "votes"] = "newest",
+    offset: int = Query(default=0, ge=0, le=100000),
     user=Depends(optional_user),
     db: Session = Depends(get_db),
 ):
@@ -117,12 +120,23 @@ def list_code(
     if q.strip():
         query = query.where(Notebook.title.icontains(q.strip(), autoescape=True))
     set_total(response, count_rows(db, query))
-    if cursor:
-        query = query.where(Notebook.id < cursor)
-    rows = (
-        db.execute(query.order_by(Notebook.id.desc()).limit(limit + 1)).mappings().all()
-    )
+    from .votes import vote_count, vote_states
+
+    if sort == "votes":
+        query = query.order_by(
+            vote_count("code", Notebook.id).desc(), Notebook.id.desc()
+        )
+        rows = db.execute(query.offset(offset).limit(limit + 1)).mappings().all()
+    else:
+        if cursor:
+            query = query.where(Notebook.id < cursor)
+        rows = (
+            db.execute(query.order_by(Notebook.id.desc()).limit(limit + 1))
+            .mappings()
+            .all()
+        )
     page = rows[:limit]
+    votes = vote_states(db, "code", [row["id"] for row in page], user)
     bookmarks = (
         set(
             db.scalars(
@@ -148,10 +162,16 @@ def list_code(
                 ),
                 "description": (row["description"] or "")[:300],
                 "bookmarked": row["id"] in bookmarks,
+                **votes[row["id"]],
             }
             for row in page
         ],
-        "next_cursor": page[-1]["id"] if len(rows) > limit else None,
+        "next_cursor": (
+            page[-1]["id"] if len(rows) > limit and sort == "newest" else None
+        ),
+        "next_offset": (
+            offset + limit if len(rows) > limit and sort == "votes" else None
+        ),
     }
 
 
@@ -162,6 +182,8 @@ def publication_document(db, row):
 
 @router.get("/code/{id}")
 def view_code(id: int, user=Depends(optional_user), db: Session = Depends(get_db)):
+    from .votes import summary as vote_summary
+
     row = require_visible(db, id, user)
     working = db.get(NotebookWorkingCopy, id)
     publication = db.get(NotebookPublication, id)
@@ -213,6 +235,7 @@ def view_code(id: int, user=Depends(optional_user), db: Session = Depends(get_db
         "document": document,
         "inputs": inputs,
         "bookmarked": bool(user and db.get(NotebookBookmark, (user.id, id))),
+        **vote_summary(db, "code", id, user),
         "competitions": [
             {"id": competition.id, "title": competition.title}
             for competition in db.scalars(
@@ -315,6 +338,9 @@ def publish_code(
     if working:
         working.private = 0
         working.document = db.get(NotebookPublication, id).document
+    from .progression import mark_related
+
+    mark_related(db, "code", id)
     db.commit()
     return {"published": True}
 
@@ -444,6 +470,12 @@ def fork_code(
             private=1,
         )
     )
+    from .notifications import notify
+
+    # The fork itself stays private; the notification links to the original.
+    notify(
+        db, source.owner_id, "fork", actor=user, target_kind="code", target_id=source.id
+    )
     db.commit()
     return {"id": row.id, "title": row.title, "owner_id": row.owner_id}
 
@@ -477,6 +509,26 @@ class NotebookCommentInput(BaseModel):
     body: str = Field(min_length=1, max_length=10000)
 
 
+def comment_json(row, username):
+    return {
+        "id": row.id,
+        "owner_id": row.owner_id,
+        "username": username,
+        "body": row.body,
+        "created_at": row.created_at,
+        "edited_at": row.edited_at,
+        "deleted": bool(row.deleted_at),
+        "hidden": bool(row.hidden),
+        "hidden_reason": row.hidden_reason,
+    }
+
+
+def enrich_comments(db, items, user):
+    from .engagement import enrich
+
+    return enrich(db, items, user, vote_kind="notebook-comment")
+
+
 @router.get("/code/{id}/comments")
 def code_comments(
     id: int,
@@ -497,18 +549,9 @@ def code_comments(
         .limit(51)
     ).all()
     return {
-        "items": [
-            {
-                "id": row.id,
-                "owner_id": row.owner_id,
-                "username": username,
-                "body": row.body,
-                "created_at": row.created_at,
-                "hidden": bool(row.hidden),
-                "hidden_reason": row.hidden_reason,
-            }
-            for row, username in rows[:50]
-        ],
+        "items": enrich_comments(
+            db, [comment_json(row, username) for row, username in rows[:50]], user
+        ),
         "next_cursor": rows[49][0].id if len(rows) > 50 else None,
     }
 
@@ -529,30 +572,96 @@ def add_code_comment(
         raise HTTPException(422, "Write a comment first")
     row = NotebookComment(notebook_id=id, owner_id=user.id, body=body)
     db.add(row)
+    db.flush()
+    from .notifications import content_created
+    from .progression import mark_dirty
+
+    content_created(db, user, "notebook-comment", row)
+    mark_dirty(db, user.id)
     db.commit()
-    return {
-        "id": row.id,
-        "owner_id": user.id,
-        "username": user.username,
-        "body": row.body,
-        "created_at": row.created_at,
-        "hidden": False,
-        "hidden_reason": "",
-    }
+    return enrich_comments(db, [comment_json(row, user.username)], user)[0]
+
+
+def owned_comment(db, id, comment_id, user, action):
+    require_visible(db, id, user)
+    row = db.get(NotebookComment, comment_id)
+    if (
+        not row
+        or row.notebook_id != id
+        or not (not row.hidden or can_manage(user, row.owner_id))
+    ):
+        raise HTTPException(404, "Comment not found")
+    if not can_manage(user, row.owner_id):
+        raise HTTPException(403, f"You can only {action} your own comments")
+    return row
+
+
+@router.put("/code/{id}/comments/{comment_id}")
+def edit_code_comment(
+    id: int,
+    comment_id: int,
+    data: NotebookCommentInput,
+    user=Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    from .community import save_revision
+    from .models import now
+
+    row = owned_comment(db, id, comment_id, user, "edit")
+    if row.deleted_at:
+        raise HTTPException(409, "This comment was deleted")
+    body = data.body.strip()
+    if not body:
+        raise HTTPException(422, "Write a comment first")
+    if body != row.body:
+        save_revision(db, "notebook-comment", row, user)
+        previous = row.body
+        row.body, row.edited_at = body, now()
+        if row.owner_id != user.id:
+            from .moderation import record
+
+            record(
+                db,
+                user,
+                "content.update",
+                "notebook-comment",
+                row.id,
+                {"owner_id": row.owner_id},
+            )
+        from .notifications import content_edited
+
+        content_edited(db, user, "notebook-comment", row, previous)
+        db.commit()
+    owner = db.get(User, row.owner_id)
+    return enrich_comments(
+        db, [comment_json(row, owner.username if owner else "Deleted user")], user
+    )[0]
 
 
 @router.delete("/code/{id}/comments/{comment_id}", status_code=204)
 def delete_code_comment(
     id: int, comment_id: int, user=Depends(current_user), db: Session = Depends(get_db)
 ):
-    require_visible(db, id, user)
-    row = db.get(NotebookComment, comment_id)
-    if not row or row.notebook_id != id:
-        raise HTTPException(404, "Comment not found")
-    if not can_manage(user, row.owner_id):
-        raise HTTPException(403, "You can only delete your own comments")
+    """A comment with replies stays as a "deleted" placeholder."""
+    from .community import save_revision
     from .engagement import remove_engagement
+    from .models import ContentReply, now
+    from .progression import mark_related
+    from .votes import remove_votes
 
-    remove_engagement(db, "notebook-comment", [row.id])
-    db.delete(row)
+    row = owned_comment(db, id, comment_id, user, "delete")
+    mark_related(db, "notebook-comment", row.id)
+    if db.scalar(
+        select(ContentReply.id).where(
+            ContentReply.target_kind == "notebook-comment",
+            ContentReply.target_id == row.id,
+        )
+    ):
+        if not row.deleted_at:
+            save_revision(db, "notebook-comment", row, user)
+            row.body, row.deleted_at = "", now()
+            remove_votes(db, "notebook-comment", [row.id])
+    else:
+        remove_engagement(db, "notebook-comment", [row.id])
+        db.delete(row)
     db.commit()

@@ -1,4 +1,5 @@
 import {
+  Award,
   FolderOpen,
   Home,
   Trophy,
@@ -19,7 +20,8 @@ export type Page =
   | 'notebooks'
   | 'models'
   | 'courses'
-  | 'discussions';
+  | 'discussions'
+  | 'rankings';
 export const nav = [
   { id: 'home', label: 'Overview', icon: Home },
   { id: 'competitions', label: 'Competitions', icon: Trophy },
@@ -29,8 +31,9 @@ export const nav = [
   { id: 'notebooks', label: 'Codes', icon: Code2 },
   { id: 'courses', label: 'Learn', icon: GraduationCap },
   { id: 'discussions', label: 'Discussions', icon: MessageSquare },
+  { id: 'rankings', label: 'Rankings', icon: Award },
   { id: 'work', label: 'Your work', icon: FolderOpen },
 ] as const;
 export const dataHubPages: readonly Page[] = ['datasets', 'models', 'notebooks'];
 
-export const morePages: readonly Page[] = ['courses', 'discussions'];
+export const morePages: readonly Page[] = ['courses', 'discussions', 'rankings'];

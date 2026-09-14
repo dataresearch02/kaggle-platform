@@ -3,6 +3,7 @@ import { Bookmark, Search, ArrowUpRight } from 'lucide-react';
 import { api, type User } from './api';
 import NewNotebook from './NewNotebook';
 import NotebookAvatar, { type NotebookPublisher } from './NotebookAvatar';
+import { VoteButton } from './Community';
 export type CodeSummary = {
   id: number;
   title: string;
@@ -12,8 +13,14 @@ export type CodeSummary = {
   publisher?: NotebookPublisher;
   created_at: string;
   bookmarked: boolean;
+  votes?: number;
+  voted?: boolean;
 };
-type CodeBatch = { items: CodeSummary[]; next_cursor: number | null };
+type CodeBatch = {
+  items: CodeSummary[];
+  next_cursor: number | null;
+  next_offset?: number | null;
+};
 const filters = [
   ['all', 'All'],
   ['your-work', 'Your work'],
@@ -32,6 +39,7 @@ export default function CodeList({
   joined?: boolean;
 }) {
   const [filter, setFilter] = useState('all');
+  const [sort, setSort] = useState('newest');
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState('');
   const [revision, setRevision] = useState(0);
@@ -163,6 +171,14 @@ export default function CodeList({
             maxLength={160}
           />
         </label>
+        <select
+          aria-label="Sort codes"
+          value={sort}
+          onChange={(event) => setSort(event.target.value)}
+        >
+          <option value="newest">Newest</option>
+          <option value="votes">Most votes</option>
+        </select>
       </div>
       {error && (
         <p className="error" role="alert">
@@ -178,9 +194,10 @@ export default function CodeList({
         </div>
       ) : (
         <CodeRows
-          key={`${competitionId}-${filter}-${search}-${user?.id}-${revision}`}
+          key={`${competitionId}-${filter}-${sort}-${search}-${user?.id}-${revision}`}
           competitionId={competitionId}
           filter={filter}
+          sort={sort}
           search={search}
           user={user}
           signIn={signIn}
@@ -192,12 +209,14 @@ export default function CodeList({
 function CodeRows({
   competitionId,
   filter,
+  sort,
   search,
   user,
   signIn,
 }: {
   competitionId?: number;
   filter: string;
+  sort: string;
   search: string;
   user: User | null;
   signIn: () => void;
@@ -218,16 +237,17 @@ function CodeRows({
     busy.current = true;
     setLoading(true);
     setError('');
-    const query = new URLSearchParams({ filter, q: search, limit: '20' });
+    const query = new URLSearchParams({ filter, q: search, limit: '20', sort });
     if (competitionId) query.set('competition_id', String(competitionId));
-    if (after) query.set('cursor', String(after));
+    // "Most votes" pages by offset; newest-first keeps the id cursor.
+    if (after) query.set(sort === 'votes' ? 'offset' : 'cursor', String(after));
     try {
       const batch = await api<CodeBatch>(`/code?${query}`);
       if (!mounted.current || version !== generation.current) return;
       setRows((previous) => [
         ...new Map([...previous, ...batch.items].map((row) => [row.id, row])).values(),
       ]);
-      setCursor(batch.next_cursor);
+      setCursor(sort === 'votes' ? (batch.next_offset ?? null) : batch.next_cursor);
     } catch (e) {
       if (mounted.current && version === generation.current) setError((e as Error).message);
     } finally {
@@ -284,6 +304,16 @@ function CodeRows({
                 {row.description || 'Explore this notebook and its published results.'}
               </p>
             </div>
+            <VoteButton
+              kind="code"
+              id={row.id}
+              votes={row.votes}
+              voted={row.voted}
+              ownerId={row.owner_id}
+              user={user}
+              signIn={signIn}
+              label={row.title}
+            />
             <button
               className="code-bookmark"
               aria-label={`${row.bookmarked ? 'Remove bookmark for' : 'Bookmark'} ${row.title}`}

@@ -80,6 +80,9 @@ export type Item = {
   leaderboard_split?: boolean;
   finalized_at?: string | null;
   timeline?: Timeline;
+  /** Upvotes on datasets and models, and whether the signed-in user voted. */
+  votes?: number;
+  voted?: boolean;
 };
 export type MetricInfo = {
   name: string;
@@ -141,6 +144,8 @@ export type LeaderboardRow = {
   public_rank?: number | null;
   medal?: Medal | null;
   automatic_selection?: boolean;
+  /** Overall tier of a solo participant. */
+  tier?: string | null;
 };
 export type CompetitionResult = {
   competition_id: number;

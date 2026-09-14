@@ -4,11 +4,19 @@ import { X } from 'lucide-react';
 import { api } from './api';
 import DiscussionEditor from './DiscussionEditor';
 
+export type DiscussionScope = 'competition' | 'forum' | 'dataset' | 'model';
+
 export default function DiscussionCreate({
   competitionId,
+  scope = 'competition',
+  scopeId,
+  scopeTitle,
   close,
 }: {
-  competitionId: number;
+  competitionId?: number;
+  scope?: DiscussionScope;
+  scopeId?: number;
+  scopeTitle?: string;
   close: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -17,6 +25,7 @@ export default function DiscussionCreate({
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
+  const target = scope === 'competition' ? (scopeId ?? competitionId) : scopeId;
   useEffect(() => {
     const focused = document.activeElement as HTMLElement;
     dialog.current?.showModal();
@@ -35,16 +44,21 @@ export default function DiscussionCreate({
       <form
         onSubmit={async (event) => {
           event.preventDefault();
-          if (busy || uploading) return;
+          if (busy || uploading || target === undefined) return;
           setBusy(true);
           setError('');
           try {
-            const post = await api<{ id: number }>(`/competitions/${competitionId}/discussion`, {
+            const post = await api<{ id: number; url: string }>('/competition-discussions', {
               method: 'POST',
-              body: JSON.stringify({ title: title.trim(), body: body.trim() }),
+              body: JSON.stringify({
+                scope,
+                scope_id: target,
+                title: title.trim(),
+                body: body.trim(),
+              }),
             });
             close();
-            location.hash = `competitions/${competitionId}/discussion/${post.id}`;
+            location.hash = post.url.replace(/^#/, '');
           } catch (e) {
             setError((e as Error).message);
           } finally {
@@ -53,7 +67,7 @@ export default function DiscussionCreate({
         }}
       >
         <header>
-          <h2>New discussion</h2>
+          <h2>New discussion{scopeTitle ? ` in ${scopeTitle}` : ''}</h2>
           <button
             type="button"
             aria-label="Close discussion sidebar"
@@ -81,7 +95,7 @@ export default function DiscussionCreate({
             label="Discussion message"
             value={body}
             onChange={setBody}
-            competitionId={competitionId}
+            competitionId={scope === 'competition' ? target : undefined}
             disabled={busy}
             onUploadingChange={setUploading}
           />

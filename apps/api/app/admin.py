@@ -263,6 +263,9 @@ def resolve_report(
     row.resolution_note = data.note.strip()
     row.resolved_by = admin.id
     row.resolved_at = now()
+    from .moderation import notify_reporter
+
+    notify_reporter(db, row, admin)
     record(
         db,
         admin,
@@ -305,6 +308,9 @@ def moderate(
         )
     row.hidden = int(data.hidden)
     row.hidden_reason = reason if data.hidden else ""
+    from .progression import mark_related
+
+    mark_related(db, kind, id)
     db.commit()
     return {"kind": kind, "id": id, **describe_target(db, kind, id)}
 
@@ -339,6 +345,31 @@ def hidden_content(
     return [
         {"kind": name, "id": target_id, **describe_target(db, name, target_id)}
         for name, target_id in pagination.slice(items)
+    ]
+
+
+@router.get("/revisions/{kind}/{id}")
+def revisions(
+    kind: Literal["competition-post", "reply", "notebook-comment"],
+    id: int,
+    db=Depends(get_db),
+):
+    """Previous text of an edited or author-deleted topic, comment or reply."""
+    from .models import ContentRevision
+
+    return [
+        {
+            "id": row.id,
+            "editor": username(db, row.editor_id),
+            "title": row.title,
+            "body": row.body,
+            "created_at": row.created_at,
+        }
+        for row in db.scalars(
+            select(ContentRevision)
+            .where(ContentRevision.target_kind == kind, ContentRevision.target_id == id)
+            .order_by(ContentRevision.id.desc())
+        )
     ]
 
 
